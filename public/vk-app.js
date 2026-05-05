@@ -3076,7 +3076,7 @@ function renderSettings(main) {
           <span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
         </div>
 
-        <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+        <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;align-items:center">
           <button class="btn btn-secondary btn-sm" id="btn-kdf-test">
             <i data-lucide="timer" width="14" height="14"></i> Test
           </button>
@@ -3091,11 +3091,11 @@ function renderSettings(main) {
         <div id="kdf-result" style="margin-top:12px;font-size:13px;line-height:1.5;color:var(--text-m,#888);min-height:20px"></div>
 
         <p class="form-hint" style="margin-top:14px">
-          <strong>Test</strong> measures how long these settings take to derive
-          your key on this device. <strong>Recommend</strong> auto-tunes for
-          ~800ms (the security sweet spot). <strong>Apply</strong> re-encrypts
-          your vault with the new settings — you'll need to enter your master
-          password.
+          <strong>Test</strong> measures how long your current slider choice
+          takes on this device. <strong>Recommend</strong> runs a sweep and
+          picks the strongest setting that stays close to ~800ms (the
+          security sweet spot). <strong>Apply</strong> re-encrypts your vault
+          with the chosen settings — you'll need to enter your master password.
         </p>
       </div>
       <div class="health-section danger-zone">
@@ -3257,9 +3257,10 @@ function renderSettings(main) {
     const result = $('#kdf-result', main);
     btn.disabled = true; btn.textContent = 'Testing…';
     result.style.color = 'var(--text-m,#888)';
-    result.textContent = 'Running benchmark on this device…';
+    const params = getKdfFromSliders();
+    result.textContent = `Testing ${params.memoryCost / 1024} MiB · ${params.timeCost} iterations on this device…`;
     try {
-      const ms = await benchmarkKdf(getKdfFromSliders());
+      const ms = await benchmarkKdf(params);
       const verdict = ms < 500 ? '⚠ too fast — increase memory or iterations'
                     : ms < 1500 ? '✓ good — sweet spot'
                     : ms < 2500 ? '⚠ slow — usable but logins will feel laggy'
@@ -3268,12 +3269,13 @@ function renderSettings(main) {
                   : ms < 1500 ? 'var(--success,#22c55e)'
                   : ms < 2500 ? 'var(--gold,#eab308)' : 'var(--error,#ef4444)';
       result.style.color = color;
-      result.textContent = '~' + Math.round(ms) + 'ms on this device — ' + verdict;
+      result.textContent = `${params.memoryCost / 1024} MiB · ${params.timeCost} iter → ~${Math.round(ms)}ms — ${verdict}`;
     } catch (e) {
       result.style.color = 'var(--error,#ef4444)';
       result.textContent = 'Benchmark failed: ' + e.message;
     } finally {
-      btn.disabled = false; btn.innerHTML = '<i data-lucide="timer" width="14" height="14"></i> Test';
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="timer" width="14" height="14"></i> Test';
       renderIcons(btn);
     }
   });
