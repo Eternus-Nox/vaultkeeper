@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VaultKeeper E2E Crypto — Test Harness</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+  }
+  h1 { margin: 0 0 8px; font-size: 22px; }
+  h2 { margin: 24px 0 8px; font-size: 16px; color: var(--text-dim); font-weight: 500; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 20px; margin-bottom: 16px;
+    max-width: 900px;
+  }
+  button {
+    background: var(--blue); color: white; border: 0;
+    padding: 10px 18px; border-radius: 6px; font-size: 14px;
+    cursor: pointer; font-weight: 600;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  button.secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+  pre {
+    background: #010409; border: 1px solid var(--border);
+    padding: 12px; border-radius: 6px; font-size: 12px;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  .ok  { color: var(--green); }
+  .err { color: var(--red); }
+  .warn { color: var(--yellow); }
+  .muted { color: var(--text-dim); }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .stat {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 12px; font-weight: 600;
+  }
+  .stat-ok { background: #1a3d20; color: var(--green); }
+  .stat-err { background: #3d1a1a; color: var(--red); }
+  .small { font-size: 13px; }
+  details summary { cursor: pointer; padding: 4px 0; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>VaultKeeper E2E Crypto — Test Harness</h1>
+  <p class="muted">
+    This page runs the Day 1 crypto module through every primitive and every
+    failure mode it's designed to catch. No network calls, no server state.
+    If all tests pass, the crypto layer is ready for Day 2.
+  </p>
+  <div class="row">
+    <button id="run-btn">Run all tests</button>
+    <button id="bench-btn" class="secondary">Run argon2id benchmark</button>
+    <span id="summary" class="muted small"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Diagnostics</h2>
+  <pre id="diag" style="font-size:12px">Loading…</pre>
+</div>
+
+<div class="card">
+  <h2>Test log</h2>
+  <pre id="log">Click "Run all tests" to begin.</pre>
+</div>
+
+<!-- ──────────────────────────────────────────────────────────────────────
+     SW PROBE: the test page can be intercepted by the main app's service
+     worker. If a SW is active, log it so the diagnostic banner explains
+     what's happening — we don't auto-unregister because the user might
+     be currently using the main app in another tab.
+──────────────────────────────────────────────────────────────────────── -->
+<script>
+window.__vktSwProbe = (function(){
+  var info = { has: false, scope: null, controller: null };
+  if (!('serviceWorker' in navigator)) return Promise.resolve(info);
+  info.controller = navigator.serviceWorker.controller
+    ? (navigator.serviceWorker.controller.scriptURL || 'unknown')
+    : null;
+  return navigator.serviceWorker.getRegistrations().then(function(regs){
+    info.has = regs.length > 0;
+    info.scope = regs.map(function(r){ return r.scope; }).join(', ');
+    return info;
+  }).catch(function(){ return info; });
+})();
+</script>
+
+<!-- hash-wasm (argon2id + blake2b). Self-hosted to avoid third-party loads.
+     Two paths attempted: the main app's /vendor/ path first; if a content
+     blocker drops it, fall back to a renamed copy in this folder. -->
+<script src="/vendor/hash-wasm.umd.min.js?v=3.4.5"
+        onload="window.__hashwasmLoaded=true"
+        onerror="window.__hashwasmLoaded=false"></script>
+<script>
+// If the primary load failed, try the fallback. Content blockers commonly
+// match /vendor/* and *.min.js patterns; the fallback uses a neutral
+// filename so it slips through. Requires a server-side copy at
+// /tests/hashlib.js (run the deploy command from the README).
+(function(){
+  if (window.__hashwasmLoaded === true) return;
+  // Document.write a synchronous script tag so subsequent script tags
+  // don't run until this one is settled.
+  document.write('<scr' + 'ipt src="hashlib.js" ' +
+    'onload="window.__hashwasmLoaded=true;window.__hashwasmFallback=true" ' +
+    'onerror="window.__hashwasmFallback=false"></scr' + 'ipt>');
+})();
+</script>
+<!-- Belt-and-suspenders: if UMD attached hashwasm somewhere other than window
+     (e.g. an AMD define is present), reach in and fish it out. -->
+<script>
+(function(){
+  if (typeof window.hashwasm === 'object' && window.hashwasm) return; // already good
+  // Common hiding spots:
+  if (typeof globalThis !== 'undefined' && globalThis.hashwasm) {
+    window.hashwasm = globalThis.hashwasm;
+    console.log('[hashwasm-fix] recovered from globalThis');
+    return;
+  }
+  if (typeof self !== 'undefined' && self.hashwasm && self !== window) {
+    window.hashwasm = self.hashwasm;
+    console.log('[hashwasm-fix] recovered from self');
+    return;
+  }
+  // Scan every window property for something that quacks like hashwasm
+  for (const k of Object.keys(window)) {
+    const v = window[k];
+    if (v && typeof v === 'object' && typeof v.argon2id === 'function' && typeof v.blake2b === 'function') {
+      window.hashwasm = v;
+      console.log('[hashwasm-fix] found hashwasm under window.' + k);
+      return;
+    }
+  }
+  console.warn('[hashwasm-fix] could not locate hashwasm anywhere');
+})();
+</script>
+<!-- crypto module under test -->
+<script src="/vk-crypto.js?v=3.4.5"></script>
+<script>
+// ── Self-diagnostic banner ──────────────────────────────────────────────────
+// Runs before the test harness so loading problems are obvious at a glance.
+(function () {
+  const diag = [];
+  diag.push('Script load: /vendor/hash-wasm.umd.min.js → ' +
+    (window.__hashwasmLoaded === true && !window.__hashwasmFallback ? '✓ OK (primary)' :
+     window.__hashwasmLoaded === true && window.__hashwasmFallback ? '✓ OK (fallback hashlib.js)' :
+     window.__hashwasmLoaded === false ? '✗ BLOCKED — likely a content blocker (ad blocker, tracking protection) is filtering /vendor/* paths. Disable it for this site, or copy hash-wasm.umd.min.js to /public/tests/hashlib.js as a fallback.' :
+     '? unknown (script tag not evaluated)'));
+  diag.push('Global `hashwasm` object: ' + (typeof window.hashwasm));
+  if (typeof window.hashwasm === 'object' && window.hashwasm) {
+    diag.push('  hashwasm.argon2id: ' + (typeof window.hashwasm.argon2id));
+    diag.push('  hashwasm.blake2b:  ' + (typeof window.hashwasm.blake2b));
+  }
+  diag.push('Global `VKCrypto` object: ' + (typeof window.VKCrypto));
+  diag.push('Secure context: ' + window.isSecureContext);
+
+  const el = document.getElementById('diag');
+  for (const d of diag) {
+    const line = document.createElement('div');
+    line.textContent = d;
+    if (d.includes('✗')) line.style.color = 'var(--red)';
+    if (d.includes('✓')) line.style.color = 'var(--green)';
+    el.appendChild(line);
+  }
+
+  // Surface SW info — if a SW is active, it's likely intercepting these
+  // requests. Show its scope and expose a one-tap unregister button so the
+  // user can clear it without diving into browser dev tools.
+  if (window.__vktSwProbe) {
+    window.__vktSwProbe.then(function(info){
+      const swLine = document.createElement('div');
+      if (info.has || info.controller) {
+        swLine.textContent = 'Service Worker: ACTIVE — ' +
+          (info.controller ? 'controller=' + info.controller : 'scope=' + info.scope);
+        swLine.style.color = 'var(--yellow)';
+        el.appendChild(swLine);
+
+        // Cause hint
+        const hint = document.createElement('div');
+        hint.textContent = '↳ This SW may be intercepting fetches. If tests fail, unregister it:';
+        hint.style.color = 'var(--text-dim)';
+        hint.style.marginTop = '4px';
+        el.appendChild(hint);
+
+        // Action button
+        const btn = document.createElement('button');
+        btn.textContent = 'Clear Service Worker & Reload';
+        btn.style.marginTop = '8px';
+        btn.style.background = 'var(--yellow)';
+        btn.style.color = '#000';
+        btn.onclick = async () => {
+          btn.disabled = true;
+          btn.textContent = 'Clearing…';
+          try {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map(r => r.unregister()));
+            if ('caches' in window) {
+              const keys = await caches.keys();
+              await Promise.all(keys.map(k => caches.delete(k)));
+            }
+            location.reload();
+          } catch (e) {
+            btn.textContent = 'Failed: ' + e.message;
+          }
+        };
+        el.appendChild(btn);
+      } else {
+        swLine.textContent = 'Service Worker: none active ✓';
+        swLine.style.color = 'var(--green)';
+        el.appendChild(swLine);
+      }
+    });
+  }
+
+  // Also probe the file directly via fetch to show HTTP status and content-type
+  fetch('/vendor/hash-wasm.umd.min.js?v=3.4.5', { method: 'HEAD' }).then(r => {
+    const msg = 'HEAD /vendor/hash-wasm.umd.min.js → ' + r.status + ' ' +
+                (r.headers.get('content-type') || '(no content-type)');
+    const line = document.createElement('div');
+    line.textContent = msg;
+    line.style.color = r.ok && (r.headers.get('content-type') || '').includes('javascript')
+      ? 'var(--green)' : 'var(--red)';
+    document.getElementById('diag').appendChild(line);
+  }).catch(err => {
+    const line = document.createElement('div');
+    line.textContent = 'HEAD /vendor/hash-wasm.umd.min.js → FETCH ERROR: ' + err.message
+      + ' (most likely cause: stale Service Worker — use the Clear button above)';
+    line.style.color = 'var(--red)';
+    document.getElementById('diag').appendChild(line);
+  });
+})();
+</script>
+<script>
+const logEl = document.getElementById('log');
+const summaryEl = document.getElementById('summary');
+let results = [];
+let currentGroup = null;
+
+function log(s, cls) {
+  const line = document.createElement('span');
+  if (cls) line.className = cls;
+  line.textContent = s + '\n';
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function clearLog() { logEl.textContent = ''; }
+
+function group(name) {
+  currentGroup = name;
+  log('\n── ' + name + ' ──', 'muted');
+}
+async function test(name, fn) {
+  const start = performance.now();
+  try {
+    await fn();
+    const ms = (performance.now() - start).toFixed(0);
+    log('  ✓ ' + name + '   ' + ms + 'ms', 'ok');
+    results.push({ group: currentGroup, name, ok: true, ms });
+  } catch (e) {
+    log('  ✗ ' + name + '   ' + e.message, 'err');
+    if (e.stack) log(e.stack.split('\n').slice(1, 4).map(l => '      ' + l).join('\n'), 'muted');
+    results.push({ group: currentGroup, name, ok: false, error: e.message });
+  }
+}
+function expect(cond, msg) {
+  if (!cond) throw new Error(msg || 'expectation failed');
+}
+function expectEqual(a, b, msg) {
+  if (a !== b) throw new Error((msg || 'not equal') + ' (got ' + a + ' vs ' + b + ')');
+}
+function expectBytesEqual(a, b, msg) {
+  if (a.length !== b.length) throw new Error((msg || 'length') + ' ' + a.length + ' vs ' + b.length);
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) throw new Error((msg || 'byte differ') + ' at index ' + i);
+  }
+}
+async function expectThrows(fn, matching, msg) {
+  try { await fn(); } catch (e) {
+    if (matching) {
+      // WebCrypto's OperationError has an empty .message in Firefox/Safari.
+      // Fall back to matching on the error name/type so tests don't fail
+      // just because the browser doesn't expose a useful message.
+      const haystack = (e && e.message) || (e && e.name) ||
+                       (e && e.constructor && e.constructor.name) || '';
+      if (!matching.test(haystack)) {
+        throw new Error('threw wrong error: ' + haystack);
+      }
+    }
+    return;
+  }
+  throw new Error(msg || 'expected throw but none happened');
+}
+
+const USER = 'testuser';
+const PASS = 'correct horse battery staple';
+// Cut argon2 cost way down for tests. Real signup uses defaults.
+const TEST_PARAMS = { memoryCost: 8192, timeCost: 1, parallelism: 1, hashLength: 32 };
+
+async function runAll() {
+  clearLog();
+  results = [];
+  document.getElementById('run-btn').disabled = true;
+  summaryEl.textContent = 'running…';
+
+  try {
+    // ── 0. Environment ───────────────────────────────────────────────────────
+    group('Environment checks');
+    await test('Secure context', () => expect(window.isSecureContext, 'page is not in a secure context (need HTTPS)'));
+    await test('SubtleCrypto available', () => expect(typeof crypto.subtle?.encrypt === 'function'));
+    await test('hash-wasm loaded', () => expect(typeof hashwasm?.argon2id === 'function'));
+    await test('VKCrypto module loaded', () => expect(typeof VKCrypto?.prepareSignup === 'function'));
+
+    // ── 1. Byte helpers ──────────────────────────────────────────────────────
+    group('Byte helpers');
+    await test('hex round-trip', () => {
+      const b = new Uint8Array([0, 127, 255, 16, 32, 48]);
+      const hex = VKCrypto.bytesToHex(b);
+      expectEqual(hex, '007fff102030');
+      expectBytesEqual(VKCrypto.hexToBytes(hex), b);
+    });
+    await test('base64 round-trip (small)', () => {
+      const b = new Uint8Array([1, 2, 3, 4, 5]);
+      expectBytesEqual(VKCrypto.b64ToBytes(VKCrypto.bytesToB64(b)), b);
+    });
+    await test('base64 round-trip (8KB)', () => {
+      const b = VKCrypto.randomBytes(8_000);
+      expectBytesEqual(VKCrypto.b64ToBytes(VKCrypto.bytesToB64(b)), b);
+    });
+    await test('ctEquals true', () => {
+      const a = new Uint8Array([1,2,3]);
+      const b = new Uint8Array([1,2,3]);
+      expect(VKCrypto.ctEquals(a, b));
+    });
+    await test('ctEquals false (diff byte)', () => {
+      expect(!VKCrypto.ctEquals(new Uint8Array([1,2,3]), new Uint8Array([1,2,4])));
+    });
+    await test('ctEquals false (diff length)', () => {
+      expect(!VKCrypto.ctEquals(new Uint8Array([1,2,3]), new Uint8Array([1,2,3,4])));
+    });
+
+    // ── 2. Randomness ────────────────────────────────────────────────────────
+    group('Randomness');
+    await test('randomBytes(32) returns 32 bytes', () => {
+      expectEqual(VKCrypto.randomBytes(32).length, 32);
+    });
+    await test('randomBytes(32) differs across calls', () => {
+      const a = VKCrypto.randomBytes(32);
+      const b = VKCrypto.randomBytes(32);
+      expect(!VKCrypto.ctEquals(a, b), 'two random draws should not be equal');
+    });
+
+    // ── 3. KDF determinism + stretched-key derivation ─────────────────────────
+    group('KDF');
+    let masterKey, stretched;
+    await test('deriveMasterKey returns 32 bytes', async () => {
+      masterKey = await VKCrypto.deriveMasterKey(USER, PASS, TEST_PARAMS);
+      expectEqual(masterKey.length, 32);
+    });
+    await test('deriveMasterKey is deterministic', async () => {
+      const again = await VKCrypto.deriveMasterKey(USER, PASS, TEST_PARAMS);
+      expectBytesEqual(masterKey, again, 'same input → same key');
+    });
+    await test('deriveMasterKey varies by password', async () => {
+      const other = await VKCrypto.deriveMasterKey(USER, PASS + 'x', TEST_PARAMS);
+      expect(!VKCrypto.ctEquals(masterKey, other), 'different password → different key');
+    });
+    await test('deriveMasterKey varies by username (different salt)', async () => {
+      const other = await VKCrypto.deriveMasterKey('otheruser', PASS, TEST_PARAMS);
+      expect(!VKCrypto.ctEquals(masterKey, other), 'different username → different key');
+    });
+    await test('deriveMasterKey username case-insensitive', async () => {
+      const upper = await VKCrypto.deriveMasterKey(USER.toUpperCase(), PASS, TEST_PARAMS);
+      expectBytesEqual(masterKey, upper, 'username should be lowercased');
+    });
+    await test('deriveMasterKey trims whitespace', async () => {
+      const padded = await VKCrypto.deriveMasterKey('  ' + USER + '  ', PASS, TEST_PARAMS);
+      expectBytesEqual(masterKey, padded, 'username should be trimmed');
+    });
+    await test('splitMasterKey gives two 32-byte keys', async () => {
+      stretched = await VKCrypto.splitMasterKey(masterKey);
+      expectEqual(stretched.enc.length, 32);
+      expectEqual(stretched.mac.length, 32);
+      expect(!VKCrypto.ctEquals(stretched.enc, stretched.mac), 'enc and mac keys must differ');
+    });
+    await test('deriveAuthHash is deterministic', async () => {
+      const a1 = await VKCrypto.deriveAuthHash(masterKey, USER);
+      const a2 = await VKCrypto.deriveAuthHash(masterKey, USER);
+      expectBytesEqual(a1, a2);
+    });
+    await test('deriveAuthHash differs from masterKey (domain separation)', async () => {
+      const auth = await VKCrypto.deriveAuthHash(masterKey, USER);
+      expect(!VKCrypto.ctEquals(auth, masterKey), 'auth hash must not equal master key');
+    });
+
+    // ── 4. symKey wrap/unwrap ────────────────────────────────────────────────
+    group('Protected symmetric key');
+    let symKey, wrapped;
+    await test('wrapSymKey outputs base64 string', async () => {
+      symKey = VKCrypto.randomBytes(64);
+      wrapped = await VKCrypto.wrapSymKey(symKey, stretched.enc, stretched.mac);
+      expect(typeof wrapped === 'string', 'should be string');
+      expect(wrapped.length > 100, 'should be substantial length');
+    });
+    await test('unwrapSymKey recovers original', async () => {
+      const back = await VKCrypto.unwrapSymKey(wrapped, stretched.enc, stretched.mac);
+      expectBytesEqual(back, symKey);
+    });
+    await test('unwrapSymKey rejects flipped ciphertext byte', async () => {
+      const bytes = VKCrypto.b64ToBytes(wrapped);
+      bytes[20] ^= 1; // flip a ciphertext bit (past version + iv)
+      const tampered = VKCrypto.bytesToB64(bytes);
+      await expectThrows(() => VKCrypto.unwrapSymKey(tampered, stretched.enc, stretched.mac),
+        /HMAC mismatch|tampered|decryption/i);
+    });
+    await test('unwrapSymKey rejects flipped HMAC byte', async () => {
+      const bytes = VKCrypto.b64ToBytes(wrapped);
+      bytes[bytes.length - 1] ^= 1; // flip HMAC tail
+      const tampered = VKCrypto.bytesToB64(bytes);
+      await expectThrows(() => VKCrypto.unwrapSymKey(tampered, stretched.enc, stretched.mac),
+        /HMAC mismatch|tampered/i);
+    });
+    await test('unwrapSymKey rejects wrong enc key', async () => {
+      const wrongEnc = VKCrypto.randomBytes(32);
+      // No matcher: WebCrypto's OperationError has an empty .message in
+      // Firefox/Safari, so we just assert that *something* throws — the
+      // important thing is that decryption fails, not the wording.
+      await expectThrows(() => VKCrypto.unwrapSymKey(wrapped, wrongEnc, stretched.mac));
+    });
+    await test('unwrapSymKey rejects wrong mac key', async () => {
+      const wrongMac = VKCrypto.randomBytes(32);
+      await expectThrows(() => VKCrypto.unwrapSymKey(wrapped, stretched.enc, wrongMac),
+        /HMAC mismatch|tampered/i);
+    });
+    await test('unwrapSymKey rejects truncated envelope', async () => {
+      const bytes = VKCrypto.b64ToBytes(wrapped).slice(0, 20);
+      await expectThrows(() => VKCrypto.unwrapSymKey(VKCrypto.bytesToB64(bytes), stretched.enc, stretched.mac),
+        /too short|tampered|HMAC/i);
+    });
+
+    // ── 5. Item encrypt/decrypt ──────────────────────────────────────────────
+    group('Vault item encryption');
+    let item = {
+      type: 'login',
+      name: 'Gmail',
+      url: 'https://mail.google.com',
+      username: 'me@example.com',
+      password: 'hunter2',
+      totp: 'otpauth://totp/x?secret=ABC',
+      notes: 'Recovery codes: 12345-67890\nBackup email: backup@example.com'
+    };
+    let itemCt;
+    await test('encryptItem produces a ciphertext', async () => {
+      itemCt = await VKCrypto.encryptItem(item, symKey);
+      expect(typeof itemCt === 'string');
+    });
+    await test('decryptItem returns original', async () => {
+      const back = await VKCrypto.decryptItem(itemCt, symKey);
+      expectEqual(JSON.stringify(back), JSON.stringify(item));
+    });
+    await test('encryption is nondeterministic (unique IV each time)', async () => {
+      const ct1 = await VKCrypto.encryptItem(item, symKey);
+      const ct2 = await VKCrypto.encryptItem(item, symKey);
+      expect(ct1 !== ct2, 'same plaintext + key should produce different ciphertext thanks to random IV');
+    });
+    await test('decryptItem rejects tampered ciphertext', async () => {
+      const bytes = VKCrypto.b64ToBytes(itemCt);
+      bytes[20] ^= 1;
+      await expectThrows(() => VKCrypto.decryptItem(VKCrypto.bytesToB64(bytes), symKey),
+        /HMAC mismatch|tampered|decryption/i);
+    });
+    await test('decryptItem rejects wrong symKey', async () => {
+      const wrongKey = VKCrypto.randomBytes(64);
+      await expectThrows(() => VKCrypto.decryptItem(itemCt, wrongKey), /./);
+    });
+    await test('encrypt round-trips unicode', async () => {
+      const uni = { notes: '你好 🔐 مرحبا Ω≈ç√∫˜µ≤≥÷', password: 'p@$$w🔑rd' };
+      const ct = await VKCrypto.encryptItem(uni, symKey);
+      const back = await VKCrypto.decryptItem(ct, symKey);
+      expectEqual(JSON.stringify(back), JSON.stringify(uni));
+    });
+    await test('encrypt round-trips large note (100KB)', async () => {
+      const big = { notes: 'x'.repeat(100_000) };
+      const ct = await VKCrypto.encryptItem(big, symKey);
+      const back = await VKCrypto.decryptItem(ct, symKey);
+      expectEqual(back.notes.length, 100_000);
+    });
+
+    // ── 6. High-level flows ──────────────────────────────────────────────────
+    group('Signup / login / password change flows');
+
+    let signupResult;
+    await test('prepareSignup produces server payload + session', async () => {
+      signupResult = await VKCrypto.prepareSignup(USER, PASS, TEST_PARAMS);
+      expect(signupResult.toServer.username === USER);
+      expect(typeof signupResult.toServer.auth_hash === 'string');
+      expect(typeof signupResult.toServer.protected_symmetric_key === 'string');
+      expect(signupResult.toServer.kdf.algorithm === 'argon2id');
+      expect(signupResult.session.masterKey.length === 32);
+      expect(signupResult.session.symKey.length === 64);
+    });
+
+    await test('login reproduces the same symKey', async () => {
+      // Simulate server sending us the stored KDF params + protectedSymKey
+      const storedKdf = signupResult.toServer.kdf;
+      const storedProtected = signupResult.toServer.protected_symmetric_key;
+
+      const { masterKey: loginMK, authHashB64 } = await VKCrypto.deriveLogin(USER, PASS, storedKdf);
+      // auth_hash should match what server has
+      expectEqual(authHashB64, signupResult.toServer.auth_hash, 'auth hashes must match');
+
+      const { symKey: recoveredSym } = await VKCrypto.completeLogin(loginMK, storedProtected);
+      expectBytesEqual(recoveredSym, signupResult.session.symKey, 'unwrapped symKey should match signup symKey');
+    });
+
+    await test('login with wrong password produces wrong auth hash', async () => {
+      const storedKdf = signupResult.toServer.kdf;
+      const { authHashB64 } = await VKCrypto.deriveLogin(USER, 'wrong-password', storedKdf);
+      expect(authHashB64 !== signupResult.toServer.auth_hash, 'wrong password must produce different auth hash');
+    });
+
+    await test('encrypted items survive password change (rewrap)', async () => {
+      // Encrypt an item under current symKey
+      const originalCt = await VKCrypto.encryptItem(item, signupResult.session.symKey);
+      // User changes password
+      const NEW_PASS = 'new pass phrase here 42';
+      const rewrap = await VKCrypto.rewrapForNewPassword(
+        signupResult.session, NEW_PASS, USER, TEST_PARAMS
+      );
+      // symKey must be unchanged — item ciphertext still valid
+      expectBytesEqual(rewrap.newSession.symKey, signupResult.session.symKey,
+        'symKey is re-wrapped but unchanged');
+      const stillWorks = await VKCrypto.decryptItem(originalCt, rewrap.newSession.symKey);
+      expectEqual(stillWorks.name, item.name);
+
+      // New auth_hash must differ from old
+      expect(rewrap.toServer.auth_hash !== signupResult.toServer.auth_hash,
+        'new password must yield new auth hash');
+
+      // Old masterKey can no longer unwrap the new protectedSymKey
+      const oldStretched = await VKCrypto.splitMasterKey(signupResult.session.masterKey);
+      await expectThrows(() => VKCrypto.unwrapSymKey(
+        rewrap.toServer.protected_symmetric_key, oldStretched.enc, oldStretched.mac
+      ), /HMAC|tampered/i);
+
+      // New masterKey + new protectedSymKey round-trip
+      const newStretched = await VKCrypto.splitMasterKey(rewrap.newSession.masterKey);
+      const unwrapped = await VKCrypto.unwrapSymKey(
+        rewrap.toServer.protected_symmetric_key, newStretched.enc, newStretched.mac
+      );
+      expectBytesEqual(unwrapped, signupResult.session.symKey);
+    });
+
+    // ── 7. Sanity: "zero knowledge" property ────────────────────────────────
+    group('Zero-knowledge properties');
+
+    await test('server payload contains no plaintext password or key material', async () => {
+      const serialized = JSON.stringify(signupResult.toServer);
+      expect(!serialized.includes(PASS), 'password leaked in server payload');
+      // masterKey is Uint8Array — check its hex doesn't appear
+      const mkHex = VKCrypto.bytesToHex(signupResult.session.masterKey);
+      expect(!serialized.toLowerCase().includes(mkHex.toLowerCase()),
+        'masterKey leaked in server payload');
+      const skHex = VKCrypto.bytesToHex(signupResult.session.symKey);
+      expect(!serialized.toLowerCase().includes(skHex.toLowerCase()),
+        'symKey leaked in server payload (without encryption)');
+    });
+
+    await test('item ciphertext reveals no plaintext substring', async () => {
+      const ct = await VKCrypto.encryptItem(item, signupResult.session.symKey);
+      // base64-decode it and look for obvious plaintext bytes
+      const bytes = VKCrypto.b64ToBytes(ct);
+      const haystack = String.fromCharCode.apply(null, bytes);
+      expect(!haystack.includes('Gmail'), 'plaintext name should not appear in ciphertext bytes');
+      expect(!haystack.includes('hunter2'), 'plaintext password should not appear');
+      expect(!haystack.includes('mail.google.com'), 'plaintext URL should not appear');
+    });
+
+  } finally {
+    document.getElementById('run-btn').disabled = false;
+    const ok = results.filter(r => r.ok).length;
+    const fail = results.filter(r => !r.ok).length;
+    const totalMs = results.reduce((s, r) => s + (Number(r.ms) || 0), 0);
+    const cls = fail === 0 ? 'stat-ok' : 'stat-err';
+    summaryEl.innerHTML = `<span class="stat ${cls}">${ok}/${results.length} passed</span> &nbsp; ${totalMs}ms total`;
+    log('\n' + '═'.repeat(60), 'muted');
+    log((fail === 0 ? '✓ All ' + ok + ' tests passed' : '✗ ' + fail + ' failed, ' + ok + ' passed'),
+        fail === 0 ? 'ok' : 'err');
+    log('Total time: ' + totalMs + 'ms', 'muted');
+  }
+}
+
+async function runBenchmark() {
+  clearLog();
+  document.getElementById('bench-btn').disabled = true;
+  log('argon2id benchmark — measures how long a real login will feel\n', 'muted');
+
+  try {
+    await hashwasm.argon2id({ password: new Uint8Array(1), salt: new Uint8Array(16), iterations: 1, memorySize: 1024, parallelism: 1, hashLength: 32, outputType: 'binary' });
+    log('warmup done\n', 'muted');
+
+    log('— sweep at t=3 (memory scaling) —', 'muted');
+    for (const m of [32768, 65536, 131072, 196608, 262144, 393216, 524288]) {
+      const start = performance.now();
+      await VKCrypto.deriveMasterKey(USER, PASS, { memoryCost: m, timeCost: 3, parallelism: 1, hashLength: 32 });
+      const ms = (performance.now() - start).toFixed(0);
+      log(`  ${(m/1024).toFixed(0)} MiB, t=3, p=1  →  ${ms}ms`, ms < 500 ? 'warn' : (ms < 2000 ? 'ok' : 'err'));
+    }
+
+    log('\n— sweep at t=5 (matches new production defaults) —', 'muted');
+    for (const m of [131072, 196608, 262144, 393216, 524288]) {
+      const start = performance.now();
+      await VKCrypto.deriveMasterKey(USER, PASS, { memoryCost: m, timeCost: 5, parallelism: 1, hashLength: 32 });
+      const ms = (performance.now() - start).toFixed(0);
+      log(`  ${(m/1024).toFixed(0)} MiB, t=5, p=1  →  ${ms}ms`, ms < 500 ? 'warn' : (ms < 2000 ? 'ok' : 'err'));
+    }
+
+    log('\nTarget: 500-1500ms at the default (256 MiB / t=5).', 'muted');
+    log('Under 500ms means params are too weak; over 2000ms will feel laggy on this device.', 'muted');
+  } finally {
+    document.getElementById('bench-btn').disabled = false;
+  }
+}
+
+document.getElementById('run-btn').onclick = runAll;
+document.getElementById('bench-btn').onclick = runBenchmark;
+</script>
+</body>
+</html>

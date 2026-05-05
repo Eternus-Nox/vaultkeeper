@@ -1,0 +1,99 @@
+# ════════════════════════════════════════════════════════════════════════
+# VaultKeeper docker-compose.yml — self-hosted, end-to-end-encrypted
+# password manager.
+#
+#   • TLS is terminated upstream (Cloudflare Tunnel, nginx, Caddy, etc.).
+#     The container speaks plain HTTP on port 3333 inside the network.
+#   • All configuration is inline below — no .env file required. Replace
+#     the four REPLACE_ME values with your own.
+#   • Three secrets need to be generated:
+#       - JWT_SECRET (long random, ≥32 chars)
+#       - PRELOGIN_SECRET (long random, ≥32 chars)
+#       - PGPASSWORD (any strong password — appears TWICE, must match)
+#     Quick generator:
+#         openssl rand -base64 48
+#   • Two passkey-related values must match the public-facing URL where
+#     users will access the app (NOT the LAN IP):
+#       - WEBAUTHN_RP_ID:   bare hostname (no scheme, no port)
+#       - WEBAUTHN_ORIGIN:  full URL with scheme
+# ════════════════════════════════════════════════════════════════════════
+
+services:
+  vaultkeeper:
+    build: .
+    container_name: vaultkeeper
+    restart: unless-stopped
+    ports:
+      # Maps host port:container port. If you reverse-proxy by container
+      # name, you can drop this entirely and connect to vaultkeeper:3333
+      # from the same Docker network.
+      - "3333:3333"
+    environment:
+      # ─── REQUIRED SECRETS ────────────────────────────────────────────
+      # Generate each with: openssl rand -base64 48
+      JWT_SECRET: REPLACE_ME_JWT_SECRET
+      PRELOGIN_SECRET: REPLACE_ME_PRELOGIN_SECRET
+      PGPASSWORD: REPLACE_ME_PGPASSWORD
+
+      # ─── PASSKEY / WEBAUTHN CONFIG ──────────────────────────────────
+      # MUST match the public URL the browser sees.
+      #
+      # Examples:
+      #   Domain via Cloudflare Tunnel / reverse proxy:
+      #     WEBAUTHN_RP_ID:  vault.example.com
+      #     WEBAUTHN_ORIGIN: https://vault.example.com
+      #
+      #   LAN IP (no domain):
+      #     WEBAUTHN_RP_ID:  192.168.1.100
+      #     WEBAUTHN_ORIGIN: https://192.168.1.100
+      #     (LAN IPs require HTTPS too — terminate TLS at a reverse proxy
+      #     even on LAN, or configure your browser to trust a self-signed
+      #     cert. WebAuthn refuses plaintext HTTP except on localhost.)
+      WEBAUTHN_RP_ID: REPLACE_ME_HOSTNAME
+      WEBAUTHN_ORIGIN: https://REPLACE_ME_HOSTNAME
+
+      # Optional: display name for the relying party in Face ID / passkey
+      # prompts. Defaults to "VaultKeeper".
+      # WEBAUTHN_RP_NAME: VaultKeeper
+
+      # ─── SERVER CONFIG ──────────────────────────────────────────────
+      PORT: 3333
+
+      # ─── DATABASE CONNECTION ────────────────────────────────────────
+      # Don't change unless you know what you're doing.
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: vaultkeeper
+      PGUSER: vault
+
+      # ─── FIRST-RUN OPTIONS (commented out by default) ───────────────
+      # Uncomment to drop and recreate the DB schema on next start. ALL
+      # data is lost. Only use during initial setup or for a clean reset.
+      # DROP_AND_RECREATE: yes-I-am-sure
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Bind-mount /app/public so you can hot-reload client assets without
+      # rebuilding. Remove this volume to lock the image's bundled assets.
+      - ./public:/app/public
+
+  db:
+    image: postgres:16-alpine
+    container_name: vaultkeeper-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vaultkeeper
+      POSTGRES_USER: vault
+      # Must match PGPASSWORD in the vaultkeeper service above.
+      POSTGRES_PASSWORD: REPLACE_ME_PGPASSWORD
+    volumes:
+      - vaultkeeper_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault -d vaultkeeper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  vaultkeeper_db:

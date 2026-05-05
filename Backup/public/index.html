@@ -1,0 +1,2307 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <script>
+    (function(){
+      try{
+        var t = localStorage.getItem('vk_theme');
+        if(t === 'light' || t === 'dark' || t === 'oled'){
+          document.documentElement.setAttribute('data-theme', t);
+        } else if(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches){
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      }catch(e){}
+      // Detect "Add to Home Screen" / standalone PWA mode so CSS can drop
+      // padding meant for browser chrome that isn't there.
+      try{
+        var standalone =
+          (window.navigator && window.navigator.standalone === true) ||
+          (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+          (window.matchMedia && window.matchMedia('(display-mode: fullscreen)').matches);
+        if (standalone) document.documentElement.setAttribute('data-pwa', 'standalone');
+      }catch(e){}
+
+      // ─────────────────────────────────────────────────────────────────
+      // iOS keyboard handling.
+      //
+      // Problem: When the soft keyboard appears, iOS scrolls the page UP
+      // to keep the focused input above the keyboard. position:fixed
+      // elements (bottom-nav, modals) get scrolled with the page instead
+      // of anchoring to the visible viewport. After the keyboard dismisses,
+      // iOS sometimes doesn't fully scroll back, leaving the page shifted.
+      //
+      // Solution: Use the visualViewport API to track the visible region.
+      //   - On resize/scroll: set --kb-offset to the keyboard height,
+      //     translate the bottom-nav up by that amount so it sits above
+      //     the keyboard
+      //   - On blur of any input: force-scroll back to top so the page
+      //     resets to its correct position
+      // ─────────────────────────────────────────────────────────────────
+      try {
+        var vv = window.visualViewport;
+        if (vv) {
+          function updateKB() {
+            // Keyboard height = layout viewport height - visual viewport height.
+            // When no keyboard, this is ~0. When keyboard up, it's ~280-340px.
+            var kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+            document.documentElement.style.setProperty('--kb-offset', kb + 'px');
+            // Only flag keyboard as "open" if BOTH conditions are true:
+            //   1. The kb offset is large (>120px — more than just a transient
+            //      viewport reflow, but less than any real iOS keyboard).
+            //   2. An input element actually has focus.
+            // This prevents false-positives during initial PWA layout calculation
+            // where iOS briefly reports innerHeight != visualViewport.height,
+            // which previously caused the bottom-nav to slide off-screen on first paint.
+            var focused = document.activeElement;
+            var hasInputFocus = focused && (
+              focused.tagName === 'INPUT' ||
+              focused.tagName === 'TEXTAREA' ||
+              focused.tagName === 'SELECT' ||
+              focused.isContentEditable
+            );
+            if (kb > 120 && hasInputFocus) {
+              document.documentElement.setAttribute('data-kb', 'open');
+            } else {
+              document.documentElement.removeAttribute('data-kb');
+            }
+          }
+          vv.addEventListener('resize', updateKB);
+          vv.addEventListener('scroll', updateKB);
+          // Also re-evaluate when focus changes — without this, focusing an
+          // input doesn't re-run updateKB and the nav-hide doesn't kick in.
+          document.addEventListener('focusin', updateKB, true);
+          document.addEventListener('focusout', updateKB, true);
+          updateKB();
+
+          // ─────────────────────────────────────────────────────────────
+          // BOTTOM-NAV ANCHOR FIX (the "nav too high on initial render"
+          // bug). On iOS PWA, position:fixed bottom:0 initially anchors
+          // to a layout viewport that may differ from the visual viewport
+          // by a few pixels (or more). Result: the nav sits "too high"
+          // with black space visible below it. After the user scrolls,
+          // iOS recomputes the viewports and the nav snaps down.
+          //
+          // Fix: use the visualViewport API to compute the actual bottom
+          // offset and write it to a CSS variable. The nav uses
+          // bottom: var(--vv-bottom-offset, 0px) so it sits at the true
+          // visible bottom from the very first paint.
+          //
+          // The offset is positive when the layout viewport extends below
+          // the visual viewport (the "nav too high" case). It's set on
+          // every visualViewport resize so the nav always tracks correctly.
+          // ─────────────────────────────────────────────────────────────
+          function updateNavAnchor() {
+            // Distance from visual viewport bottom to layout viewport bottom.
+            // This is non-zero in two cases:
+            //   1. Keyboard is up (we want offset > 0 so nav stays above kb)
+            //   2. iOS rubber-band drag (we want offset = 0 — the nav must
+            //      stay anchored to the bottom while content bounces)
+            //
+            // We distinguish by checking whether an input is focused.
+            // Without this, swipe-scrolling the password generator page
+            // visibly slides the nav up/down because vv.height fluctuates
+            // by a few pixels during the rubber-band.
+            var focused = document.activeElement;
+            var hasInputFocus = focused && (
+              focused.tagName === 'INPUT' ||
+              focused.tagName === 'TEXTAREA' ||
+              focused.tagName === 'SELECT' ||
+              focused.isContentEditable
+            );
+            var offset = 0;
+            if (hasInputFocus) {
+              var vvBottom = vv.offsetTop + vv.height;
+              var lvBottom = window.innerHeight;
+              offset = Math.max(0, lvBottom - vvBottom);
+            }
+            document.documentElement.style.setProperty(
+              '--vv-bottom-offset', offset + 'px'
+            );
+          }
+          vv.addEventListener('resize', updateNavAnchor);
+          // NOTE: we deliberately do NOT listen to vv.scroll here — that
+          // event fires during every rubber-band drag and would move the
+          // nav with each touch frame. resize alone is enough to track
+          // keyboard show/hide which is the only case we care about.
+          // Run on load AND on next frame AND after a delay to catch every
+          // moment iOS might be recomputing viewports during initial paint.
+          updateNavAnchor();
+          requestAnimationFrame(updateNavAnchor);
+          window.addEventListener('load', function() {
+            updateNavAnchor();
+            // Force iOS to fully sync viewports — classic 1px scroll trick.
+            // Without this, iOS can leave the layout viewport stale until
+            // the user manually scrolls. The scroll(0,1) → scroll(0,0)
+            // dance triggers a viewport recompute, after which everything
+            // is correctly sized.
+            setTimeout(function() {
+              window.scrollTo(0, 1);
+              window.scrollTo(0, 0);
+              updateNavAnchor();
+            }, 50);
+            setTimeout(updateNavAnchor, 250);
+            setTimeout(updateNavAnchor, 500);
+          });
+          // Re-evaluate when focus changes — that's the real signal for
+          // keyboard show/hide.
+          document.addEventListener('focusin', updateNavAnchor, true);
+          document.addEventListener('focusout', updateNavAnchor, true);
+        }
+        // Force the page back to top whenever an input loses focus,
+        // but ONLY if the page actually got scrolled (>5px) — otherwise
+        // we end up fighting iOS's own scroll-reset, causing visible bounce.
+        document.addEventListener('focusout', function(e) {
+          if (!e.target) return;
+          var tag = e.target.tagName;
+          if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return;
+          // Defer until after iOS does its own scroll reset
+          setTimeout(function(){
+            if (window.scrollY > 5 || (document.scrollingElement && document.scrollingElement.scrollTop > 5)) {
+              window.scrollTo(0, 0);
+              if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
+            }
+          }, 100);
+        }, true);
+      } catch(e) {}
+    })();
+  </script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#f9f8f5" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#181716" media="(prefers-color-scheme: dark)" />
+  <meta name="vk-build" content="v3.4.5-stronger-kdf" />
+  <link rel="manifest" href="data:application/manifest+json;base64,eyJuYW1lIjoiVmF1bHRLZWVwZXIiLCJzaG9ydF9uYW1lIjoiVmF1bHRLZWVwZXIiLCJzdGFydF91cmwiOiIvIiwic2NvcGUiOiIvIiwiZGlzcGxheSI6InN0YW5kYWxvbmUiLCJvcmllbnRhdGlvbiI6InBvcnRyYWl0IiwiYmFja2dyb3VuZF9jb2xvciI6IiMxODE3MTYiLCJ0aGVtZV9jb2xvciI6IiMxODE3MTYiLCJpY29ucyI6W3sic3JjIjoiZGF0YTppbWFnZS9wbmc7YmFzZTY0LGlWQk9SdzBLR2dvQUFBQU5TVWhFVWdBQUFMUUFBQUMwQ0FJQUFBQ3lyNUZsQUFBUEtrbEVRVlI0MnUyZGEyeGN4M1hIejVtNWo5M2xTeWIxSkNYRGtsTzNSdXdrQmh5a1R1dklFbVZaTlpyQXNnTFRMWkFhcUlPZzdZZWl6eTl1QVNNb1VpTkkreUZKRzZldWcwUkFEWlNPRkx0SXEwcVVsdFJTQ3BVNmJpVkZzaWhTb2xhUDNhVklTaUs1bExoN1gzUDZZVVJXa2ltV2xKYmt2WGZQLzVNQWlzVGV1Yjg5L3pNelo4NWcvVHMvQWhackpna2VBaGJEd1dJNFdBd0hpK0ZnTVJ3c2hvUEZjTEFZRGhiRHdXSTRXQ3lHZzhWd3NCZ09Gc1BCWWpoWURBZUw0V0F4SEN5R2c4VndzRmdNQjR2aFlERWNMSWFEeFhDd0dBNFd3OEZpT0ZnTUI0dmhxRFlob2tSRUFJbklvOEZ3M0pSbXdnbUNVZGQxbFJwMVhVVmtJRE5TeFhBZ2dDR0VRQnh6SFZlcEZZbkUzei81dVo5czJ2Sjh5OXFrRU5kY3gxWEtFS0thQTRsUm5WaElJWndnR0M5TjJ0TDRyWloxZi9ySnh6KzNmR1dkYVFMQXRwWjFJK1h5RDg3MHZkbDM2dUxFaEJDaTNySVFJQ0NxdW9HcXFyWlBFbEVSdVVxVlBHOTlmY1B2cnQrd2NmV2FaNXZYNnAvcTF5K21ET1dxNC96d2JOL2g0YUU5bHk0b2dLUmhXb2dCVlJFalZRR0hEaFdLYU54MUV0SlltVXgrN1pGZis4TkhIbjNBdGdHQUFJZ0liMGt5Q0NBZ1plQk56OTFmeUgzNzFNa1Byb3lNT09Xa05KS0dRVVRWRUVoaURzZTBnOXh3SFZzYXJjMHR0enFJcjVTZXBNejR1eG9SaVVML2VLUmMrc0daL3FyeW10akNNYnVEK0VSeXp2T1JnS2c2dlNadWNNelhRZWF1S3ZTYStNQnhQdzR5WDBTcXhHdmlBRWNGSFdUdXFnYXZpVEFjQytjZzdEVVJobU54SElTOUptSndMSW1EVkszWFJBT09NRGhJRlhwTjJPRUltNE5VbGRlRUY0NlFPMGcxZUUzbzRJaVdnOFRiYTBJSGgwODBHVFVIcVlUWEZJV1FOYWFKRE1jc1k3Y2lrZmlkaDZMcUlQZmxOVU5EQndmeklEQTg0U01zY0NDQVI3VE1zdjc3dDdldlRpWWo3U0QzN0RXdkgvdndiNDc5VDJNaTZTa1ZobzhYcmpKQkJLZzNUVjhwbndodnFidUpxeERBUUVFQUpkOEhnSlJoaGlvM0RWME5xVTlVYlpXYnVwb1ZBRlRJRWxJUndwRmlNUndzaG9QRmNMQVlEaGJEd1dJeEhDeUdnOFZ3c0JnT0ZzUEJZamhZWVpYQlEzRC9Jb0JBS1FJUTBTOUhZamdxaWdVcEE0WGVWb1dwTWhRUkMwUVlqdnVTTHNnWWRaMGZudTIvN3JoUHJWcjliSE1MSWxJc3RwY1pqbnVQR1lxb0hBVGY2VDM1WmwvdnBZa0pJTElObzdXNStjOC8rZWxuVnEvUkxzTUphVFhLRFFLSitOM1RINzNXYzJqY2RSdVR5YVpVS21XYWUzSzVsN3M3aTU0bkVLTitrSnJodUJkNVN0bFNkaFR5M3pweDdJSDZCb0hvSytVcEZSQ3RTQ2F2bFNiZjdEdEZBSDQ0U2tFWmprVWx3eFNpbzVEZjNybXZyQlRSYmVWOWJoQllwdm5QL2FkdmVKNHBSS1NEQitjYzkwNkdRR0VLY2NkSkpBS1FLSXFlcDZML3NCdzU1cUdBYUhZeUFNQkFkSHp2czh0WDJFSUVSTWh3VkFrWkNMQXZuNXVGREFSUUFBSFJYMy9xQ1Z0S2poeFZJVVVrRVIybHZuSzRpd0JuSkVOUFQ0cXUrL0tHVC96R3lsWDZWM2lkSS81azZNanhlNGU2Smx3dlpSait4OGlRaUo1U1FQVFQxcTNQcjMzUWp6NFpIRG5tU2dZQnRHWFN1N0lEeWJ1VG9VanQzdnpzODJzZkRPSnk2UUxETVRjeURxWjNaODgxSlZQQjNjbDRiL056VzV2WGVrckZadTh0bnJaU2tXM1MyOGc0ZjY0cE9jUDVabkViR1MxNm9odWJZVFJpaUVVbHRrbm5RZ1lDS0NKRjZyM05XK05IUmd6aHFNZzI2VnpJQUFBaFJORngvbjNMTnUwbU1TTWpWbkRvWEdEUzk3L1RlL0w3ZmIwWGI5OG0zYmg2RGN6dC9yWTVrbUVLY2JVMDJmYndyMnhyaVNjWnNVcElmYVVRNE51OUoxL3JPVFIyeHpacEpxM3p4UCszeDhGOHlDanRXUC93dnp5OVNmZU1pR1hxSm1JVE5rd2hyam5PUC9YMTF0ZlYzN3BOdWp5Um1QQzhyeHpxMGhPTldmaVlIeGtQYldqZjJDcW03ZzlrT0VJZE5nQmc1MEQvcFltaUtjUnQyNlJLSlExalYzYWdMWk9tV3lDNFh6S2VhY1dwTEtkaUx5TmttTVVxSGw1em5Ca1R6NENvS1puYW5UM1hkbkJtUG1ocThic3RNejh5S3ZnNkNhQWNCTWh3VlA0eEVBRmc0K28xdG1FRU0vMEhUNm1tWkhMMytSbjQwRlU1TjN6LzVVeDZkM1pnOGNuUW5uakQ4M2FlN1U5WWRuaEtoR0lDaDBRTWlMYXNhV2x0YmhrdGw2eVpNc1M3OGVFR2dTbkVkMDkvdE90cy80cFV6ZUxIREk0Y2k1U1cvdFhqVDZ4S0pJdWVOK09zOVE0K0VORzlXZkNYKzlhSlk4dHFhdDBnV0JJeU9PZVkwOXU5NTQ1Nm1vYlByMXpWOTJMYkY5YzlPRm91bWJQSGowemFVOG9TWWw4aHQ3MnpvNndVRU5EU2thSEMxd0ZkaElvTWlWaGptUGY4Ri9ROUJBMlcxYjZ4ZGNmNmg2K1dadVhqM05tdjlSemFtNyswdlhNL29yQ0ZWQjlqWTlISUFJQWF3NVFoSzFnWDRTSERSQnh6eXBtaEF0eGYvRkJFQ05DK3NYWEhReHRtNFdOWk12V3YyWUVYdXc1SW5MbDRaekZqQmdCa2hncGpUdGtNRXg4aGloeVdFQk9Pa3hrYWhQdHIxNnBmSVFLMFB6TWJING9vYVJpV0VET3VuQnBDWEN1WGQ2emY4TzdDeDR3cE9BWW5ITWNLMDJKcnVHd0ZFWk95QXRzOWMrZURZT1k4bytnNFc1cGIyamUyTGxxcW1KUUdzcTNNeWdjbEsxU1hPMGMrWmpRbVZ3V213SzgvOGFSRVZJczFpVWhLT1ZOQ3pIQk1mWTlOYVdhR0xwZUNvQ0puQ2UrQkQxM1dGU2oxYjYzYm5scXhVaGY4TFhTOEZJaWxJTWdNWFRhbHFiZ3gvdDNoa0llSGgyVGx1bHpNaTQ5YkMvNmViVzVadElJLy9ieUhoNGRNS1JtT3U4cEE5QUwvWjhPWG9YSlhDTXlSajZVcStOT1ArYlBoeTE3Z0c3d0lOa3VBdFlRWUw1ZjNGWEpVMGZzbHB2bDQ5NW5XSGVzM1hDdVg3M2p4WXVrSy9uUlN2SytRR3krWHJaQ2RyUTFYNVBDVVN0bUpYZWV6azc1ZjJWUEkwMGxsKzhiV0xjMHQxOHJsaEpTbzd4dEVKTVFibnZ1VFRWc1h1ZUJQYjdsTit2NnU4OW1VbmZCQ2Rpby9qUGV0M1BEOWN1QlgvbEVSRllCRS9Qb1RUNjVNSklaTEpWZXBnS2pvdVJPdTA3YitFOCsxclBXWG91Q3ZIUGczZkQrRUZVUFMzdkZDcUQ2UUxlWFYwdVRLVk9xcEZhdjhTcWVFZWhLMHJxYm1xNDg4V205Wi9STkZKUHJDcWpYLytPdS8rWmVQZmNvbmtrSXM1a3ZTRC9qOS90NzN6NStyczZ5d1hSMGF4Z0pqUlZSMDNZV0xUSXBvbVdXOTl2aG4vdVRSeHp5bEdpeExSL2lseWdlTHJxdENlZTF3K081NFV5cGwyVHNIem95NTdnSTFQOUh4d3llVk1vd0d5NktwRS9TTG40Q2JRb3k1N3M2Qk02a3cxZmlFRnc0Q1NFaDVvVGordmI1VEFkRUNEZG4wdFl3MGxaTXV5ZGNnSVBwZTM2a0x4ZkdFbE1TUll5NEtsRXFZMXR0bitvaGdRVHNuNGRJMWhOUmhnd2plUHRPWE1LMGdsTjNEd2dnSEFWaFNqa3hPZHQvM0RtMW9wUitxZTJod1pITFNDbVhZZ05DV0NacUkxMTFuLzJDZTRnc0hBZXdmekY5M0hUT3NCMTlDQ29lblZJMmRhTThPbEh6ZkVFTEZqQXdBUTRpUzc3ZG5CMnJDdC9ZVmRqajBVdnFsRzlkZjdlbEdBSWhaOENCQ2dGZDd1aS9kdUc2RnVCMWxlS3ZQQTZJYTAvcHhkaUE5V0JDSVFWejRDSWdFWW5xdzhPUHNRSTFwaGZtNVFuMDB3VUJVU2gwWXpNY3BMZFVQY21Bd3I1UXl3bjNNTnRSdytFb2xMYnM5T3pEcU9qTDZyY1JocXNKKzFIWGFzd1BKVUM1OFJRWU9Ba2hLbVMyT3Y5Vi9XaCtjanpvY3ZsSUM4YTMrMDluaWVES3NNOWhvd0tGSHM5NU9mUE9YeDNxR2gyVEVNNCtBU0NMMkRBOTk4NWZINnUxRStGa1BPeHg2UDJ6TWRiOXg0cWlZUS9lVmtHY2JBdkViSjQ2T3VhNFJCWmVNd0ZsWm42akJ0dE9GL041OGJzYlRSMUVKRzZZUWUvTzVkQ0hmWU50K0ZKNGlHZ2VwaWNpV3hwZTc5dS9ONS9TWng4aVJnUUI3ODdrdmQrMjNwVUVSK2Z3UmdVTTNXUUI0NVhDWDdsTVFvZFJVQVNCQU9RaGVPZHdWNktyRWlIeHlFYUV2WDByS01kZDl0YWRiSUZKMGdvZnVndnBxVC9lWTY2YWtqRkRZaTFKL0RwOG9aWmp2WmdjT0QxOFdpSkd3Ylo5SUlCNGV2dnh1ZGlCbG1INmtEREZpelZzRWdFQjg0OFJ4QkloRThDQWlCSGpqeEhHQkdMbEdPUkg3d0Q1UnJXbWxDems5Yy9IQ3ZWU2dUem5zemVmU2hWeXRhZmxSeTZPajEvWkp6MXgyZEhWMEZQSmhudGxPMy9tMW82c2pRak9VaU1NQklCQUZpaGZTZTQrTURNdFFKaC82TXA0akk4TXZwUGNLRkJHOVl6YVNEZU1Va1MybHArajFveC9xSllSUThlRVQ2Y1dZMTQ5KzZDbXlRM1k4T3Vad2FEdXZ0KzBEaGZ4TEJ3OElSQ00wMnk2NmE0TkFmT25nZ1FPRmZMMXRlNUhkTHd6ZGliZDV4WThhMHp4NjljclBSNGJXMWRhdXI2MEw1bit2U3NYSmtJaVpvY0UvT0hMb1B5NWRlaUNSaVBST010YS84eU9Jc2d3aHhsekhRdXpjOXNXblZxejBGNzdkeWl4dVlpQWVHUm5ldlBlbkx0R3kwSmRyeE5aVy91K1ZLTlZrSlh5Nm1YK0lKYW9aVTBSaUtzL3dpWnFzUkF5cVQrTFF3ZGhSUWIxbEh5amsyekxwNlZlMXlHVG9mN1JsMGdjSytYckxkbFFRZzRHTno1VWFqWW5FN3V5NWx6SnBQZGRkdFB4VUp6b0U4RkltdlR0N3JqRVJoNWdSS3poZ3VpOXhkdURsVEhyY2RSZW5iRXhub09PdU8vdU5DNXlRaG1QMmhYamQ5NXNzYStmVG03WTJ0emhLMlF2V2pFWC84WTVDL3BWRFhWZGR0OVl3Z25pZHI0bmI1V1FCVVoxaGpIdmU5czU5K3dvNVd3aEZWUEYzRmhBcEl2dG1VLzE5NDU1WEZ6c3lvcjNPY2RmMEVNQVNJaUI2NytLRmdOVFRxMVpyaTZuVUVvaTJFZ0w0MnhQSC91d1gveFVRSlNKVnBWSFZjSUF1U3hhQ0FQN3p3dmtQcmw1WlcxTzdvYTZ1SW4xRlBhVU1JUTVlSHZ5am54OStxL2NqMnpTTjI2K1VpNVBpbG5QY0lVdUlxNDZUa09MOXpjOXRiVzdSOFFQdkZUaEZKQkU3Q3ZrWE92ZVZBOVZrMjY1U01SNDlBYkdXcTFTamJVc1VMM1oyN01sZDFOZDgzb01GNk8wOWliZ25kL0hGemc2Sm9qSHVaTVFmam1ramtFSjhLZDNSbGttUHVxN09HR2pPQVdQcURLUGJsa2wvS2QwaGhUQkNYMmZFdGpLZjV3UUF3TW5BWDI1YmIzLytDOCt2ZlhDYUc3dzdGdE50U2Zma0xuNjFwL3VLNDZha0VidUdFRlVjT1c0SkFGUnJHRVhYdXhsQ0hNY1VBZ0hvWTBZVEVPbEdjcVlRbzQ2akEwYlI5V29OZzZxR2pOak9WbVpCUktLd3BEdytldTJkN0ZrM1VML2EwRkJqbUxvcnZzNVZwOFBKU0xuMEQ3Mm5mcituKzRNckk3V21KVkFvcUI0d3FzbFc3dnhPSUphRG9CVDRLK3pFWjVjdi80dkhQcjFwZFROTUhXZnR1bHo0dTVQSGYzSGx5b2hUVGtvanJzc1lIRG51dmhDQ1dHTVlMdEZIbzZQdlg3cWdDRDdUMkdRSzhjYUo0My84d1pHVG82TlNpRnJEMEIzVHExTlZHamx1bFlIb0VVMlV5NDgyTnE2dnJkdHo0WHhETWlramNtaHFZVWNHcWw0K2tRQm9US1d5MTYvM0Y0dE5OVFcrVWt3R3czSGJyTldXTWlGbE5TeGdNQnp6UjRRNFhGVGxPZ2VMNFdBeEhDeUdnOFZ3c0JnT0ZzUEJZamhZREFlTDRXQ3hHQTRXdzhGaU9GZ01CNHZoWURFY0xJYUR4WEN3R0E0V3c4RmlNUndzaG9QRmNMQVlEaGJEd1dJNFdBd0hpK0ZnTVJ5c0t0TC9Bc2xtSmxyS3FNOHRBQUFBQUVsRlRrU3VRbUNDIiwic2l6ZXMiOiIxODB4MTgwIiwidHlwZSI6ImltYWdlL3BuZyIsInB1cnBvc2UiOiJhbnkgbWFza2FibGUifV19" />
+  <link rel="apple-touch-icon" href="data:image/png;base64,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" />
+  <link rel="icon" type="image/png" href="data:image/png;base64,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" />
+  <title>VaultKeeper — Password Manager</title>
+
+  <!-- Register the Service Worker as early as possible. This is what
+       enables the offline-capable shell. We do this inline at the top
+       of <head> rather than waiting for window.load so iOS PWA cold
+       launches reliably register the SW. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/vk-sw.js').then(reg => {
+        // Force-update if a newer SW is found
+        if (reg.update) reg.update().catch(() => {});
+      }).catch(err => {
+        console.warn('[boot] SW register failed:', err.message);
+      });
+    }
+  </script>
+  <script src="/vendor/lucide.js"></script>
+<style>
+    /* Using system fonts — Inter / JetBrains Mono are referenced via
+       --fn / --mono CSS vars but fall back gracefully to system-ui /
+       monospace when the font files aren't shipped. */
+  </style>
+<style>
+    :root,[data-theme="light"]{
+      --bg:#f7f6f2;--surface:#f9f8f5;--surface-2:#fbfbf9;--surface-off:#f0ede8;--surface-dyn:#e8e5e0;
+      --divider:#dcd9d5;--border:#d4d1ca;
+      --text:#1a1918;--text-m:#6b6a65;--text-f:#aaa9a4;--text-inv:#f9f8f4;
+      --primary:#01696f;--primary-h:#0c4e54;--primary-a:#0f3638;--primary-hl:#cedcd8;
+      --error:#b83251;--error-h:#9a2242;--error-hl:#f0dde3;
+      --success:#437a22;--success-h:#2e5c10;--success-hl:#d4dfcc;
+      --warning:#964219;--warning-hl:#f2e0d5;
+      --blue:#006494;--purple:#7a39bb;--gold:#c88c00;
+      --r-sm:.375rem;--r-md:.5rem;--r-lg:.75rem;--r-xl:1rem;--r-full:9999px;
+      --sh-sm:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.04);
+      --sh-md:0 4px 12px rgba(0,0,0,.10),0 2px 4px rgba(0,0,0,.06);
+      --sh-lg:0 12px 32px rgba(0,0,0,.12),0 4px 12px rgba(0,0,0,.08);
+      --sh-xl:0 24px 48px rgba(0,0,0,.16),0 8px 24px rgba(0,0,0,.10);
+      --fn:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+      --mono:'JetBrains Mono','Fira Code',monospace;
+      --sidebar:240px;--topbar:56px;--tr:160ms cubic-bezier(.16,1,.3,1);
+    }
+    [data-theme="dark"]{
+      --bg:#121110;--surface:#181716;--surface-2:#1d1c1b;--surface-off:#232220;--surface-dyn:#2a2927;
+      --divider:#2e2d2b;--border:#3a3937;
+      --text:#e8e6e3;--text-m:#7a7876;--text-f:#4e4d4b;--text-inv:#1a1918;
+      --primary:#4da8b0;--primary-h:#34919a;--primary-a:#237880;--primary-hl:#1e3535;
+      --error:#e06080;--error-h:#cc4466;--error-hl:#3a1e25;
+      --success:#6daa45;--success-h:#4d8f25;--success-hl:#1e3015;
+      --warning:#d4824a;--warning-hl:#3a2015;
+      --blue:#5591c7;--purple:#a86fdf;--gold:#e8af34;
+      --sh-sm:0 1px 3px rgba(0,0,0,.25),0 1px 2px rgba(0,0,0,.15);
+      --sh-md:0 4px 12px rgba(0,0,0,.35),0 2px 4px rgba(0,0,0,.2);
+      --sh-lg:0 12px 32px rgba(0,0,0,.5),0 4px 12px rgba(0,0,0,.3);
+      --sh-xl:0 24px 48px rgba(0,0,0,.6),0 8px 24px rgba(0,0,0,.4);
+    }
+    [data-theme="oled"]{
+      --bg:#000000;--surface:#080808;--surface-2:#0f0f0f;--surface-off:#141414;--surface-dyn:#1a1a1a;
+      --divider:#1c1c1c;--border:#262626;
+      --text:#e8e6e3;--text-m:#7a7876;--text-f:#4e4d4b;--text-inv:#000000;
+      --primary:#4da8b0;--primary-h:#34919a;--primary-a:#237880;--primary-hl:#0d2526;
+      --error:#e06080;--error-h:#cc4466;--error-hl:#1a0a10;
+      --success:#6daa45;--success-h:#4d8f25;--success-hl:#0a1a07;
+      --warning:#d4824a;--warning-hl:#1a0e07;
+      --blue:#5591c7;--purple:#a86fdf;--gold:#e8af34;
+      --sh-sm:0 1px 3px rgba(0,0,0,.8);
+      --sh-md:0 4px 12px rgba(0,0,0,.9);
+      --sh-lg:0 12px 32px rgba(0,0,0,1);
+      --sh-xl:0 24px 48px rgba(0,0,0,1);
+    }
+    [data-theme="oled"] body,[data-theme="oled"] .sidebar,[data-theme="oled"] .main-content,[data-theme="oled"] .topbar{background:#000000;}
+    [data-theme="oled"] .sidebar-header,[data-theme="oled"] .topbar{background:#000000;border-color:#1c1c1c;}
+    [data-theme="oled"] .sidebar{border-right:1px solid #1c1c1c;}
+    [data-theme="oled"] .card,[data-theme="oled"] .item-card{background:#080808;border-color:#222;}
+    [data-theme="oled"] .item-card:hover{background:#0f0f0f;border-color:#2a2a2a;}
+    [data-theme="oled"] .modal-content{background:#080808;border:1px solid #222;}
+    [data-theme="oled"] .form-input,[data-theme="oled"] .form-select{background:#000;border-color:#262626;}
+    [data-theme="oled"] .form-input:focus,[data-theme="oled"] .form-select:focus{border-color:var(--primary);box-shadow:0 0 0 2px rgba(77,168,176,.15);}
+    [data-theme="oled"] .btn-primary{box-shadow:0 0 12px rgba(77,168,176,.2);}
+    [data-theme="oled"] .nav-item.active{background:#0d2526;}
+    [data-theme="oled"] .nav-item:hover{background:#0a0a0a;}
+    [data-theme="oled"] .dropdown-menu{background:#080808;border-color:#222;}
+    [data-theme="oled"] .settings-section{background:#080808;border-color:#1c1c1c;}
+    [data-theme="oled"] .strength-segment{background:#1a1a1a;}
+
+
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root {
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+    }
+    html{-webkit-font-smoothing:antialiased;scroll-behavior:smooth;-webkit-tap-highlight-color:transparent;height:100%;background:var(--surface)}
+    html{overscroll-behavior-y:none;touch-action:manipulation}
+    body{font-family:var(--fn);font-size:14px;color:var(--text);background:var(--surface);min-height:100dvh;line-height:1.5;touch-action:manipulation;overscroll-behavior-y:none}
+    input,button,textarea,select{font:inherit;color:inherit}
+    button{cursor:pointer;background:none;border:none}
+    img{display:block;max-width:100%}
+    :focus-visible{outline:2px solid var(--primary);outline-offset:2px;border-radius:var(--r-sm)}
+
+    /* ── TYPOGRAPHY ── */
+    .text-xs{font-size:11px}.text-sm{font-size:13px}.text-muted{color:var(--text-m)}.text-faint{color:var(--text-f)}
+    .text-primary{color:var(--primary)}.text-error{color:var(--error)}.text-success{color:var(--success)}
+    .font-mono{font-family:var(--mono)}.font-medium{font-weight:500}.font-semibold{font-weight:600}
+    .truncate{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+
+    /* ── LAYOUT ── */
+    #app{display:flex;height:100dvh;overflow:hidden;box-sizing:border-box;background:var(--bg)}
+    #auth-screen{display:flex;align-items:center;justify-content:center;min-height:100dvh;padding:24px;background:var(--bg);box-sizing:border-box}
+
+    /* ── SIDEBAR ── */
+    #sidebar{
+      width:var(--sidebar);min-width:var(--sidebar);background:var(--surface);
+      border-right:1px solid var(--divider);display:flex;flex-direction:column;
+      height:100dvh;overflow:hidden;flex-shrink:0;
+    }
+    .sidebar-logo{display:flex;align-items:center;gap:10px;padding:env(safe-area-inset-top,0px) 16px 0;height:calc(var(--topbar) + env(safe-area-inset-top,0px));border-bottom:1px solid var(--divider);flex-shrink:0;box-sizing:border-box}
+    .logo-icon{width:30px;height:30px;background:var(--primary);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .logo-icon svg{color:#fff}
+    .logo-text{font-size:16px;font-weight:700;letter-spacing:-.01em}
+    .sidebar-nav{flex:1;overflow-y:auto;padding:8px 0}
+    .nav-section{padding:16px 12px 4px}
+    .nav-section-label{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-f)}
+    .nav-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:var(--r-md);cursor:pointer;margin:1px 4px;transition:background var(--tr),color var(--tr);font-size:13px;font-weight:500;color:var(--text-m);user-select:none}
+    .nav-item:hover{background:var(--surface-off);color:var(--text)}
+    .nav-item.active{background:var(--primary-hl);color:var(--primary)}
+    .nav-item svg{flex-shrink:0}
+    .nav-count{margin-left:auto;font-size:11px;background:var(--surface-dyn);color:var(--text-m);padding:1px 7px;border-radius:var(--r-full)}
+    .nav-folder-dot{width:8px;height:8px;border-radius:var(--r-full);flex-shrink:0}
+    .sidebar-footer{border-top:1px solid var(--divider);padding:8px 4px;padding-bottom:calc(16px + env(safe-area-inset-bottom, 20px))}
+
+    /* ── MAIN ── */
+    #main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+
+    /* ── TOPBAR ── */
+    #topbar{height:calc(var(--topbar) + env(safe-area-inset-top,0px));padding:env(safe-area-inset-top,0px) 20px 0;border-bottom:1px solid var(--divider);display:flex;align-items:center;gap:12px;background:var(--surface);flex-shrink:0;box-sizing:border-box}
+    .topbar-title{font-size:16px;font-weight:600;flex:1}
+    .search-wrapper{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-md);padding:0 10px;height:34px;width:260px;transition:border-color var(--tr),box-shadow var(--tr)}
+    .search-wrapper:focus-within{border-color:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 15%,transparent)}
+    .search-wrapper input{background:none;border:none;outline:none;width:100%;font-size:13px}
+    .search-wrapper svg{color:var(--text-f);flex-shrink:0}
+
+    /* ── BUTTONS ── */
+    .btn{display:inline-flex;align-items:center;gap:6px;padding:0 14px;height:34px;border-radius:var(--r-md);font-size:13px;font-weight:500;transition:background var(--tr),color var(--tr),box-shadow var(--tr);border:1px solid transparent;white-space:nowrap;flex-shrink:0}
+    .btn-primary{background:var(--primary);color:#fff}
+    .btn-primary:hover{background:var(--primary-h)}
+    .btn-primary:active{background:var(--primary-a);transform:scale(.98)}
+    .btn-secondary{background:var(--surface-off);color:var(--text);border-color:var(--border)}
+    .btn-secondary:hover{background:var(--surface-dyn)}
+    .btn-ghost{color:var(--text-m)}
+    .btn-ghost:hover{background:var(--surface-off);color:var(--text)}
+    .btn-danger{background:var(--error);color:#fff}
+    .btn-danger:hover{background:var(--error-h)}
+    .btn-icon{width:34px;height:34px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-md);flex-shrink:0}
+    .btn-sm{height:28px;padding:0 10px;font-size:12px}
+
+    /* ── CONTENT ── */
+    #content{flex:1;overflow-y:auto;padding:20px}
+
+    /* ── VAULT ITEMS ── */
+    .vault-list{display:flex;flex-direction:column;gap:2px}
+    .vault-item{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:var(--r-lg);cursor:pointer;background:var(--surface);border:1px solid transparent;transition:all var(--tr);animation:itemIn .2s ease}
+    @keyframes itemIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+    .vault-item:hover{background:var(--surface-2);border-color:var(--border);box-shadow:var(--sh-sm)}
+    .vault-item:active{transform:scale(.99)}
+    .item-icon{width:38px;height:38px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;font-weight:700;color:#fff}
+    .item-info{flex:1;min-width:0}
+    .item-name{font-size:13px;font-weight:500}
+    .item-sub{font-size:12px;color:var(--text-m);margin-top:1px}
+    .item-actions{display:flex;gap:4px;opacity:0;transition:opacity var(--tr)}
+    .vault-item:hover .item-actions{opacity:1}
+    .favorite-btn{color:var(--text-f)}
+    .favorite-btn.active{color:var(--gold)}
+
+    /* ── EMPTY STATE ── */
+    .empty-state{display:flex;flex-direction:column;align-items:center;text-align:center;padding:64px 24px;color:var(--text-m)}
+    .empty-icon{color:var(--text-f);margin-bottom:16px}
+    .empty-state h3{font-size:16px;font-weight:600;color:var(--text);margin-bottom:8px}
+    .empty-state p{font-size:13px;max-width:36ch;margin-bottom:20px}
+
+    /* ── MODAL ── */
+    .modal-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .15s ease}
+    @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+    .modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);box-shadow:var(--sh-xl);width:100%;max-width:520px;max-height:90dvh;overflow-y:auto;animation:modalIn .2s cubic-bezier(.16,1,.3,1)}
+    @keyframes modalIn{from{opacity:0;transform:scale(.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
+    .modal-header{display:flex;align-items:center;gap:12px;padding:20px 24px 16px;border-bottom:1px solid var(--divider);position:sticky;top:0;background:var(--surface);z-index:1}
+    .modal-title{font-size:16px;font-weight:600;flex:1}
+    .modal-body{padding:20px 24px}
+    .modal-footer{display:flex;justify-content:flex-end;gap:8px;padding:16px 24px;border-top:1px solid var(--divider)}
+    .modal-lg{max-width:680px}
+
+    /* ── FORMS ── */
+    .form-group{margin-bottom:16px}
+    .form-label{display:block;font-size:12px;font-weight:600;color:var(--text-m);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+    .form-input{width:100%;height:38px;padding:0 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-md);font-size:14px;color:var(--text);transition:border-color var(--tr),box-shadow var(--tr)}
+    .form-input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 15%,transparent)}
+    .form-input.password-input{font-family:var(--mono);letter-spacing:.05em}
+    .form-input-wrapper{position:relative}
+    .form-input-wrapper .form-input{padding-right:40px}
+    .input-action{position:absolute;right:8px;top:50%;transform:translateY(-50%);color:var(--text-f);transition:color var(--tr)}
+    .input-action:hover{color:var(--text)}
+    .form-textarea{width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-md);font-size:14px;color:var(--text);resize:vertical;min-height:80px;line-height:1.5;transition:border-color var(--tr)}
+    .form-textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 15%,transparent)}
+    .form-select{width:100%;height:38px;padding:0 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-md);font-size:14px;color:var(--text);cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;transition:border-color var(--tr)}
+    .form-select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 15%,transparent)}
+    .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .form-error{font-size:12px;color:var(--error);margin-top:6px}
+    .form-hint{font-size:12px;color:var(--text-f);margin-top:4px}
+
+    /* ── STRENGTH METER ── */
+    .strength-bar{display:flex;gap:3px;margin-top:6px}
+    .strength-segment{height:3px;flex:1;border-radius:var(--r-full);background:var(--border);transition:background .3s}
+    .strength-label{font-size:11px;margin-top:3px}
+
+    /* ── GENERATOR ── */
+    .generator-output{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-md);padding:14px 16px;font-family:var(--mono);font-size:16px;font-weight:500;letter-spacing:.04em;word-break:break-all;min-height:56px;display:flex;align-items:center;color:var(--primary)}
+    .toggle-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--divider)}
+    .toggle-row:last-child{border-bottom:none}
+    .toggle-label{font-size:13px;font-weight:500}
+    .toggle{position:relative;width:38px;height:22px;flex-shrink:0}
+    .toggle input{opacity:0;width:0;height:0}
+    .toggle-track{position:absolute;inset:0;border-radius:var(--r-full);background:var(--border);cursor:pointer;transition:background var(--tr)}
+    .toggle input:checked~.toggle-track{background:var(--primary)}
+    .toggle-thumb{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:var(--r-full);background:#fff;transition:transform var(--tr);pointer-events:none}
+    .toggle input:checked~.toggle-track .toggle-thumb{transform:translateX(16px)}
+    .range-input{width:100%;height:4px;border-radius:var(--r-full);background:var(--border);outline:none;cursor:pointer;accent-color:var(--primary)}
+
+    /* ── HEALTH (old layout removed; styled in polished CSS below) ── */
+
+    /* ── AUTH ── */
+    .auth-card{background:var(--surface);border:1px solid var(--surface);border-radius:var(--r-xl);box-shadow:var(--sh-lg);padding:40px 40px 36px;width:100%;max-width:420px;animation:modalIn .3s cubic-bezier(.16,1,.3,1)}
+    .auth-logo{display:flex;align-items:center;gap:10px;margin-bottom:28px}
+    .auth-title{font-size:22px;font-weight:700;margin-bottom:4px}
+    .auth-sub{font-size:13px;color:var(--text-m);margin-bottom:28px}
+    .auth-switch{text-align:center;margin-top:20px;font-size:13px;color:var(--text-m)}
+    .auth-switch a{color:var(--primary);cursor:pointer;text-decoration:none}
+    .auth-switch a:hover{text-decoration:underline}
+
+    /* ── BADGES ── */
+    .badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:var(--r-full);font-size:11px;font-weight:600}
+    .badge-primary{background:var(--primary-hl);color:var(--primary)}
+    .badge-error{background:var(--error-hl);color:var(--error)}
+    .badge-success{background:var(--success-hl);color:var(--success)}
+    .badge-warning{background:var(--warning-hl);color:var(--warning)}
+    .badge-neutral{background:var(--surface-off);color:var(--text-m)}
+
+    /* ── TOAST ── */
+    #toast-container{position:fixed;bottom:20px;right:20px;z-index:1000;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+    .toast{display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-lg);padding:12px 16px;box-shadow:var(--sh-lg);font-size:13px;font-weight:500;min-width:260px;pointer-events:all;animation:toastIn .25s cubic-bezier(.16,1,.3,1)}
+    @keyframes toastIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+    .toast.removing{animation:toastOut .2s ease forwards}
+    @keyframes toastOut{to{opacity:0;transform:translateX(20px)}}
+    .toast-success{border-left:3px solid var(--success)}
+    .toast-error{border-left:3px solid var(--error)}
+    .toast-info{border-left:3px solid var(--primary)}
+
+    /* ── SCROLL ── */
+    ::-webkit-scrollbar{width:6px;height:6px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:var(--border);border-radius:var(--r-full)}
+    ::-webkit-scrollbar-thumb:hover{background:var(--text-f)}
+
+    /* ── UTILS ── */
+    .hidden{display:none!important}
+    .flex{display:flex}.items-center{align-items:center}.gap-8{gap:8px}.gap-12{gap:12px}
+    .mt-4{margin-top:4px}.mt-8{margin-top:8px}.mt-16{margin-top:16px}.mb-12{margin-bottom:12px}
+    .divider{height:1px;background:var(--divider);margin:12px 0}
+    .skeleton{background:linear-gradient(90deg,var(--surface-off) 25%,var(--surface-dyn) 50%,var(--surface-off) 75%);background-size:200% 100%;animation:shimmer 1.5s ease-in-out infinite;border-radius:var(--r-md)}
+    @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+    @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+
+    /* ── STATS ── */
+    .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:24px}
+    .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:16px}
+    .stat-value{font-size:28px;font-weight:700;color:var(--primary);line-height:1;margin-bottom:4px}
+    .stat-label{font-size:12px;color:var(--text-m);font-weight:500}
+
+    /* ── DETAIL ── */
+    .detail-field{padding:12px 0;border-bottom:1px solid var(--divider)}
+    .detail-field:last-child{border-bottom:none}
+    .detail-field-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-f);margin-bottom:4px}
+    .detail-field-value{display:flex;align-items:center;gap:8px;font-size:14px}
+    .detail-field-value.password-value{font-family:var(--mono)}
+
+    /* ── COLOR PICKER ── */
+    .color-swatches{display:flex;gap:8px;flex-wrap:wrap}
+    .color-swatch{width:24px;height:24px;border-radius:var(--r-full);cursor:pointer;border:2px solid transparent;transition:transform var(--tr),border-color var(--tr)}
+    .color-swatch:hover{transform:scale(1.15)}
+    .color-swatch.selected{border-color:var(--text)}
+
+    /* ── CUSTOM FIELDS ── */
+    .custom-field-row{display:flex;gap:8px;margin-bottom:8px}
+    .custom-field-row .form-input{flex:1}
+
+    /* ── TABS ── */
+    .tabs{display:flex;gap:2px;background:var(--bg);border-radius:var(--r-lg);padding:4px;margin-bottom:20px}
+    .tab-btn{flex:1;padding:7px 12px;border-radius:var(--r-md);font-size:13px;font-weight:500;color:var(--text-m);transition:all var(--tr);cursor:pointer}
+    .tab-btn:hover{color:var(--text);background:var(--surface-off)}
+    .tab-btn.active{background:var(--surface);color:var(--text);box-shadow:var(--sh-sm)}
+
+    /* ── TOTP ── */
+    .totp-code{font-family:var(--mono);font-size:28px;font-weight:700;letter-spacing:.1em;color:var(--primary)}
+    .totp-progress{height:3px;background:var(--border);border-radius:var(--r-full);margin-top:8px;overflow:hidden}
+    .totp-bar{height:100%;background:var(--primary);border-radius:var(--r-full);transition:width 1s linear}
+
+    /* ── AUDIT ── */
+    .audit-row{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:var(--r-md);transition:background var(--tr)}
+    .audit-row:hover{background:var(--surface-off)}
+    .audit-action{font-size:13px;font-weight:500}
+    .audit-time{font-size:12px;color:var(--text-f);margin-left:auto;white-space:nowrap}
+
+    /* ── HISTORY ── */
+    .history-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--divider)}
+    .history-row:last-child{border-bottom:none}
+    .history-pw{font-family:var(--mono);font-size:13px;flex:1;color:var(--text-m)}
+
+    /* ── SETTINGS ── */
+    .settings-section{margin-bottom:32px}
+    .settings-section-title{font-size:16px;font-weight:600;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid var(--divider)}
+    .settings-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--divider)}
+    .settings-row:last-child{border-bottom:none}
+    .settings-row-info{flex:1}
+    .settings-row-label{font-size:14px;font-weight:500}
+    .settings-row-desc{font-size:12px;color:var(--text-m);margin-top:2px}
+
+    /* ═══════════════════════════════════════════
+       MOBILE — BOTTOM NAV + DRAWER SIDEBAR
+    ═══════════════════════════════════════════ */
+    #bottom-nav{
+      display:none;position:fixed;left:0;right:0;bottom:0;z-index:40;
+      background:var(--surface);border-top:1px solid var(--divider);
+      box-sizing:border-box;
+      height:calc(60px + env(safe-area-inset-bottom,0px));
+      padding-bottom:env(safe-area-inset-bottom,0px);
+    }
+    .bottom-nav-inner{display:flex;height:60px;align-items:stretch;justify-content:space-around}
+    .bottom-nav-btn{
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      gap:3px;flex:1;padding:6px 4px;
+      color:var(--text-f);font-size:10px;font-weight:500;
+      transition:color var(--tr),background var(--tr);
+      min-height:48px;cursor:pointer;background:none;border:none;border-radius:0;
+    }
+    .bottom-nav-btn:active{background:var(--surface-off)}
+    .bottom-nav-btn.active{color:var(--primary)}
+    .bnav-add-wrap{display:flex;align-items:center;justify-content:center;flex:1}
+    .bnav-add-btn{
+      width:48px;height:48px;border-radius:var(--r-full);
+      background:var(--primary);color:#fff;border:none;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;
+      box-shadow:var(--sh-md);transition:transform var(--tr),background var(--tr);
+    }
+    .bnav-add-btn:active{transform:scale(.92);background:var(--primary-h)}
+
+    #sidebar-overlay{
+      display:none;position:fixed;inset:0;z-index:49;
+      background:rgba(0,0,0,.55);backdrop-filter:blur(2px);
+    }
+    #sidebar-overlay.visible{display:block;animation:fadeIn .2s ease}
+
+    /* ═══════════════════════════════════════════
+       RESPONSIVE BREAKPOINTS
+    ═══════════════════════════════════════════ */
+    @media(max-width:768px){
+      /* Sidebar → drawer */
+      #sidebar{
+        position:fixed;left:0;top:0;bottom:0;z-index:50;
+        transform:translateX(-100%);
+        transition:transform .28s cubic-bezier(.16,1,.3,1);
+        box-shadow:none;width:min(280px,82vw);
+        padding-top:env(safe-area-inset-top,0px);
+        padding-bottom:0;
+      }
+      #sidebar.mobile-open{transform:translateX(0);box-shadow:var(--sh-xl)}
+
+      /* Bottom nav visible, desktop add button hidden */
+      #bottom-nav{display:block}
+      #add-item-btn{display:none!important}
+
+      /* Pad inner scroll container's bottom for the fixed bottom nav so
+         content doesn't hide behind it. Padding stays inside the scroll
+         element, not on #main-pane (which is overflow:hidden). */
+      #main-pane > .pane-scroll{padding-bottom:calc(60px + env(safe-area-inset-bottom,0px))}
+      #content{padding-bottom:calc(16px + 60px + env(safe-area-inset-bottom,0px))}
+
+      /* Topbar shrinks */
+      #topbar{height:calc(52px + env(safe-area-inset-top,0px));padding:env(safe-area-inset-top,0px) 10px 0;gap:6px}
+      #topbar-title{font-size:15px}
+      .search-wrapper{flex:1;width:auto;min-width:0}
+      #mobile-menu-btn{display:flex!important}
+
+      /* Content */
+      #content{padding:12px}
+
+      /* Auth page (mobile): full-bleed, no centered card with surrounding empty space.
+         Card BECOMES the viewport so there's nothing else visible behind it. */
+      #auth-screen{padding:0 !important;align-items:stretch !important;justify-content:stretch !important;background:var(--surface) !important;min-height:100vh;min-height:100dvh}
+      .auth-card{
+        padding:calc(48px + env(safe-area-inset-top,0px)) 24px calc(32px + env(safe-area-inset-bottom,0px)) !important;
+        max-width:100% !important;
+        width:100% !important;
+        flex:1 !important;
+        border-radius:0 !important;
+        border:none !important;
+        box-shadow:none !important;
+        background:var(--surface) !important;
+        display:flex !important;
+        flex-direction:column !important;
+        justify-content:center !important;
+        animation:none !important;
+      }
+      .auth-title{font-size:20px}
+      .auth-sub{font-size:12px}
+
+      /* Vault screen (mobile): force surface bg on all containers so we never
+         have --bg showing through as a darker rectangle. */
+      html, body { background: var(--surface) !important; }
+      #app-shell { background: var(--surface) !important; }
+      #main-pane { background: var(--surface) !important; }
+      .app-body { background: var(--surface) !important; }
+
+      /* Stack form rows */
+      .form-row{grid-template-columns:1fr}
+
+      /* Modals become bottom sheets */
+      .modal-overlay{align-items:flex-end;padding:0}
+      .modal{
+        border-radius:var(--r-xl) var(--r-xl) 0 0;
+        max-height:92dvh;width:100%;max-width:100%;
+        animation:sheetIn .28s cubic-bezier(.16,1,.3,1);
+      }
+      @keyframes sheetIn{from{transform:translateY(100%);opacity:.6}to{transform:translateY(0);opacity:1}}
+      /* Drag pill */
+      .modal::before{content:'';display:block;width:36px;height:4px;border-radius:var(--r-full);background:var(--border);margin:10px auto 0}
+      .modal-header{padding:12px 18px 10px}
+      .modal-body{padding:14px 18px calc(16px + env(safe-area-inset-bottom,0px));overflow-y:auto;-webkit-overflow-scrolling:touch}
+      .modal-footer{padding:10px 18px calc(16px + env(safe-area-inset-bottom,0px));flex-wrap:wrap;gap:8px;position:sticky;bottom:0;background:var(--surface)}
+      .modal-footer .btn{flex:1 1 auto;justify-content:center;min-width:80px}
+      .modal-footer > div[style*="flex:1"]{display:none}
+      /* Full height on large forms */
+      .modal-lg{max-height:96dvh}
+
+      /* Stats */
+      .stats-grid{grid-template-columns:repeat(2,1fr);gap:8px}
+      .stat-value{font-size:22px}
+
+      /* Vault items — always show actions on mobile */
+      .vault-item{padding:12px 14px}
+      .item-actions{opacity:1}
+      .item-icon{width:42px;height:42px}
+
+      /* Generator */
+      .generator-output{font-size:14px;word-break:break-all}
+
+      /* Settings */
+      .settings-row{flex-wrap:wrap;gap:8px}
+      .settings-row .btn{align-self:flex-start}
+
+      /* Tabs */
+      .tab-btn{padding:7px 8px;font-size:12px}
+
+      /* Toasts at bottom centre on mobile */
+      #toast-container{left:16px;right:16px;bottom:calc(72px + env(safe-area-inset-bottom,0px))}
+      .toast{min-width:0;width:100%}
+
+      /* Auth buttons bigger tap target */
+      #login-btn,#register-btn{height:46px;font-size:15px;border-radius:var(--r-lg)}
+    }
+
+    @media(max-width:400px){
+      .auth-card{padding:18px 14px}
+      #topbar{padding:0 8px}
+      .tab-btn{font-size:11px;padding:6px 6px}
+    }
+
+    /* safe-area bottom handled directly in #bottom-nav */
+  </style>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════
+   Day 3b additions (polished) — see _polished_styles.css
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   VaultKeeper UI — Bitwarden/1Password style refinement
+   Built on existing tokens (--bg, --surface, --primary, etc).
+   8px grid, hairline borders, soft layered shadows, subtle hover lifts.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Base ─────────────────────────────────────────────────────────────── */
+* { -webkit-tap-highlight-color: transparent; }
+html, body {
+  background: var(--surface);
+  /* Force html/body to fill the LARGEST viewport (always includes safe
+     areas) so the surface bg always reaches the screen edge regardless
+     of dynamic Safari chrome. 100lvh is the largest viewport unit. */
+  min-height: 100vh;  /* fallback for older browsers */
+  min-height: 100lvh;
+}
+body {
+  font-family: var(--fn);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+}
+button { font-family: inherit; }
+::selection { background: var(--primary-hl); color: var(--text); }
+
+/* Scrollbars (subtle, modern) */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--text-f); }
+
+/* App layout ───────────────────────────────────────────────────────── */
+#app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+}
+.app-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 16px;
+  padding-top: calc(8px + var(--safe-top));
+  padding-left: calc(16px + var(--safe-left));
+  padding-right: calc(16px + var(--safe-right));
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface);
+  flex-shrink: 0;
+  min-height: 56px;
+  box-sizing: content-box;
+}
+.app-header-left { display: flex; align-items: center; gap: 12px; }
+.app-title { font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
+.app-sub { font-size: 12px; color: var(--text-m); }
+.app-header-right { display: flex; gap: 4px; }
+
+/* Offline-mode banner. Sits between app-header and app-body. */
+#offline-banner {
+  background: var(--warning-hl, #2a1f10);
+  border-bottom: 1px solid var(--warning, #d4824a);
+  flex-shrink: 0;
+}
+.offline-banner-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text);
+}
+.offline-banner-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--warning, #d4824a);
+  flex-shrink: 0;
+  animation: offline-pulse 2s ease-in-out infinite;
+}
+@keyframes offline-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.offline-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+.offline-banner-btn {
+  background: transparent;
+  border: 1px solid var(--warning, #d4824a);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+.offline-banner-btn:hover { background: var(--warning, #d4824a); color: var(--bg); }
+.offline-banner-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+@media (max-width: 600px) {
+  .offline-banner-text { font-size: 12px; }
+}
+
+.app-body {
+  display: grid;
+  grid-template-columns: 248px 1fr;
+  grid-template-rows: 1fr;
+  flex: 1;
+  min-height: 0;
+}
+#sidebar {
+  overflow-y: auto;
+  border-right: 1px solid var(--divider);
+  padding: 12px 8px;
+  background: var(--surface-2);
+}
+#main-pane {
+  /* Grid with two rows: auto-sized header, then 1fr scroll area.
+     Grid row sizing is rigid — unlike flex, the rows don't shift
+     during iOS rubber-band overscroll bleed. The header is locked
+     to row 1 and physically cannot drift, regardless of any visual
+     elastic effect on the scrolling row below. */
+  overflow: hidden;
+  padding: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  grid-template-columns: 100%;
+  background: var(--bg);
+  min-height: 0;
+  height: 100%;
+}
+.pane-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  /* Prevent iOS rubber-band on the inner scroll container so its bounce
+     can't drag any descendants either. touch-action explicitly tells
+     the browser this element handles vertical pan only; nothing else. */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+.list-header {
+  /* Force own compositing layer. On iOS Safari this isolates the
+     header from any visual elastic effect on sibling scroll
+     containers — even if .pane-scroll briefly visually stretches
+     during overscroll, the header's GPU-composited layer doesn't
+     follow. */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+}
+@media (max-width: 767px) {
+  /* On mobile, the main-pane fills the viewport. Use surface so any
+     unfilled space at the bottom blends with the bottom-nav and other
+     surfaces, rather than showing a darker --bg rectangle that reads
+     as a "black bar". */
+  #main-pane { background: var(--surface); }
+}
+
+/* Mobile responsive ─────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  .app-body { grid-template-columns: 1fr; }
+  #sidebar {
+    position: fixed;
+    top: 56px; left: 0; bottom: 0;
+    width: min(288px, 82vw);
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(.16,1,.3,1);
+    z-index: 50;
+    background: var(--surface-2);
+    box-shadow: var(--sh-xl);
+    padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+  }
+  #sidebar.mobile-open { transform: translateX(0); }
+  #sidebar-overlay.visible { display: block; animation: fadeIn 0.2s ease; }
+
+  #bottom-nav { display: block; }
+  /* Padding goes on the inner scroll container, not the pane itself,
+     so scroll content can extend past the bottom-nav region without
+     getting clipped by #main-pane's overflow:hidden. */
+  #main-pane > .pane-scroll {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  }
+  .list-actions #btn-new-item { display: none; }
+
+  .item-card { padding: 14px 14px; }
+  .side-link { padding: 10px 10px; }
+  .btn-icon { min-width: 40px; min-height: 40px; }
+  .mobile-only { display: inline-flex !important; }
+  .desktop-only { display: none !important; }
+  .list-header { padding: 12px 16px; }
+}
+@media (min-width: 768px) {
+  .mobile-only { display: none !important; }
+  #bottom-nav { display: none !important; }
+  #sidebar-overlay { display: none !important; }
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Sidebar ──────────────────────────────────────────────────────────── */
+.side-section { padding: 4px 0; }
+.side-section + .side-section {
+  border-top: 1px solid var(--divider);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.side-head {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-f);
+  padding: 8px 12px 6px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.side-head-add {
+  background: none; border: none;
+  color: var(--text-f);
+  cursor: pointer;
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--r-sm);
+  transition: all var(--tr);
+}
+.side-head-add:hover { background: var(--surface-off); color: var(--text); }
+.side-empty { font-size: 12px; color: var(--text-f); padding: 6px 12px; }
+.side-link {
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text-m);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer;
+  transition: all var(--tr);
+  min-width: 0;
+  overflow: hidden;
+}
+.side-link:hover { background: var(--surface-off); color: var(--text); }
+.side-link.active {
+  background: var(--primary-hl);
+  color: var(--primary);
+  font-weight: 500;
+}
+.side-link .side-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-link .side-count {
+  font-size: 11px;
+  color: var(--text-f);
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-off);
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  min-width: 22px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.side-link.active .side-count {
+  background: var(--surface);
+  color: var(--primary);
+}
+.side-dot {
+  width: 10px; height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1) inset;
+}
+
+/* Folder rows in sidebar ──────────────────────────────────────── */
+.folder-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-md);
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+.folder-row .folder-link {
+  flex: 1;
+  min-width: 0;
+  padding-right: 4px;
+}
+.folder-row.active .folder-link { color: var(--primary); font-weight: 500; }
+.folder-row.active { background: var(--primary-hl); }
+.folder-row:hover:not(.active) { background: var(--surface-off); }
+.folder-row.active .folder-link:hover,
+.folder-row .folder-link:hover { background: transparent !important; }
+.folder-edit-btn, .folder-del-btn {
+  background: none;
+  border: none;
+  color: var(--text-f);
+  cursor: pointer;
+  padding: 6px;
+  margin-right: 2px;
+  border-radius: var(--r-sm);
+  opacity: 0;
+  flex-shrink: 0;
+  transition: all var(--tr);
+}
+.folder-row:hover .folder-edit-btn,
+.folder-row:hover .folder-del-btn,
+.folder-row.active .folder-edit-btn,
+.folder-row.active .folder-del-btn { opacity: 1; }
+.folder-edit-btn:hover { color: var(--primary); background: var(--surface); }
+.folder-del-btn:hover { color: var(--error); background: var(--surface); }
+@media (hover: none) {
+  .folder-edit-btn, .folder-del-btn { opacity: 1; }
+}
+
+/* List header ──────────────────────────────────────────────────────── */
+.list-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--divider);
+  flex-shrink: 0;
+  gap: 12px;
+  background: var(--surface);
+  /* Header sits outside the scroll container (.pane-scroll) so it
+     can never drift with iOS rubber-band overscroll. No sticky
+     positioning needed — it's anchored by the flex layout. */
+  position: relative;
+  z-index: 5;
+}
+.list-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+  letter-spacing: -0.015em;
+}
+.list-actions { display: flex; gap: 8px; align-items: center; }
+.search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-off);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: 6px 10px;
+  transition: all var(--tr);
+}
+.search-wrap:focus-within {
+  border-color: var(--primary);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px var(--primary-hl);
+}
+.search-wrap i { color: var(--text-f); flex-shrink: 0; }
+.search-wrap input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  width: 220px;
+}
+.search-wrap input::placeholder { color: var(--text-f); }
+@media (max-width: 480px) { .search-wrap input { width: 140px; } }
+
+/* Item list — Bitwarden-style cards ──────────────────────────────── */
+.item-list {
+  padding: 16px 24px 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+@media (max-width: 767px) {
+  /* Mobile: main-pane has its own padding-bottom for the bottom-nav.
+     Don't double up here — only a small bottom padding so the last item
+     has breathing room above the nav. */
+  .item-list { padding: 12px 16px 12px; }
+}
+.item-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+  transition: border-color var(--tr), background var(--tr), transform var(--tr), box-shadow var(--tr);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  position: relative;
+  overflow: hidden;
+  /* Browser optimization: skip rendering off-screen rows entirely.
+     content-visibility: auto lets the engine hint that rows below the
+     fold can be lazy-painted, dramatically improving scroll fps on
+     large vaults. contain-intrinsic-size reserves layout space so the
+     scrollbar height stays consistent. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
+}
+.item-card:hover {
+  border-color: var(--primary);
+  background: var(--surface-2);
+  box-shadow: var(--sh-sm);
+  transform: translateY(-1px);
+}
+.item-card:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-hl);
+}
+.item-icon {
+  width: 36px; height: 36px;
+  background: var(--primary-hl);
+  border-radius: var(--r-md);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  color: var(--primary);
+}
+.item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.item-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: -0.005em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.item-sub {
+  font-size: 12px;
+  color: var(--text-m);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fav-btn {
+  background: none;
+  border: none;
+  color: var(--text-f);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: var(--r-sm);
+  transition: all var(--tr);
+  flex-shrink: 0;
+}
+.fav-btn:hover { color: var(--gold); background: var(--surface-off); }
+.fav-btn.active { color: var(--gold); }
+.fav-btn.active i { fill: var(--gold); }
+
+/* Detail pane / card ──────────────────────────────────────────────── */
+#detail-pane { padding: 0 24px; }
+@media (max-width: 767px) { #detail-pane { padding: 0 16px; } }
+
+.detail-card {
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  margin-top: 16px;
+  margin-bottom: 40px;
+  box-shadow: var(--sh-sm);
+  animation: slideUp 0.2s ease;
+}
+.detail-header {
+  display: flex; align-items: center; gap: 14px;
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--divider);
+}
+.detail-header .item-icon { width: 44px; height: 44px; }
+.detail-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.015em;
+}
+.detail-sub {
+  font-size: 12px;
+  color: var(--text-m);
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 4px;
+}
+.detail-fields { display: flex; flex-direction: column; gap: 10px; }
+.detail-field {
+  background: var(--surface-off);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  transition: background var(--tr);
+}
+.detail-field:hover { background: var(--surface-dyn); }
+.detail-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-f);
+  margin-bottom: 4px;
+}
+.detail-field-value {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--text);
+  font-size: 14px;
+  word-break: break-all;
+  min-height: 22px;
+}
+.detail-field-value .masked {
+  font-family: var(--mono);
+  flex: 1;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+.detail-link {
+  color: var(--primary);
+  text-decoration: none;
+  flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.detail-link:hover { text-decoration: underline; }
+.detail-footer {
+  display: flex; gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--divider);
+}
+
+/* TOTP widget ─────────────────────────────────────────────────────── */
+.totp-code {
+  font-family: var(--mono);
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  flex: 1;
+}
+.totp-progress {
+  width: 64px; height: 4px;
+  background: var(--surface-dyn);
+  border-radius: var(--r-full);
+  overflow: hidden;
+}
+.totp-progress-bar {
+  display: block; height: 100%;
+  background: var(--primary);
+  transition: width 1s linear;
+}
+
+/* Generator panel (full view in main pane) ──────────────────────── */
+.gen-card {
+  margin: 24px;
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-lg);
+  padding: 24px;
+  max-width: 600px;
+  box-shadow: var(--sh-sm);
+}
+.generator-output {
+  background: var(--surface-off);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.generator-output code {
+  flex: 1; min-width: 0;
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text);
+  word-break: break-all;
+  letter-spacing: 0.02em;
+}
+.gen-strength { margin-bottom: 20px; }
+.gen-strength-label { font-size: 12px; color: var(--text-m); margin-bottom: 6px; }
+.gen-strength-bar {
+  height: 6px;
+  background: var(--surface-dyn);
+  border-radius: var(--r-full);
+  overflow: hidden;
+}
+.gen-strength-fill {
+  display: block;
+  height: 100%;
+  transition: width 0.3s ease, background 0.3s ease;
+  border-radius: var(--r-full);
+}
+.gen-controls { display: flex; flex-direction: column; gap: 12px; }
+.gen-controls input[type="range"] { width: 100%; accent-color: var(--primary); }
+.gen-toggle {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; color: var(--text-m);
+  padding: 4px 0;
+  cursor: pointer;
+}
+.gen-toggle input { accent-color: var(--primary); width: 16px; height: 16px; }
+
+/* Inline generator (in item editor) ─────────────────────────────── */
+.inline-gen {
+  margin-top: 8px;
+  padding: 14px;
+  background: var(--surface-off);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-md);
+  display: flex; flex-direction: column; gap: 12px;
+  animation: slideUp 0.15s ease;
+}
+.inline-gen.hidden { display: none; }
+.inline-gen-header {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-m);
+}
+.inline-gen-output {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+}
+.inline-gen-output code {
+  flex: 1; min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-all;
+  letter-spacing: 0.02em;
+}
+.inline-gen-strength { display: flex; flex-direction: column; gap: 4px; }
+.inline-gen-strength .gen-strength-bar { height: 4px; }
+.inline-gen-controls { display: flex; flex-direction: column; gap: 8px; }
+.inline-gen-controls input[type="range"] { width: 100%; accent-color: var(--primary); }
+
+/* Health report ───────────────────────────────────────────────────── */
+.health-body {
+  padding: 20px 24px 80px;
+}
+@media (max-width: 767px) {
+  .health-body { padding: 16px 16px 80px; }
+
+  /* Stack generator output: password on its own row, buttons below.
+     Without this the buttons (Regenerate/Copy) sit beside the password
+     and squeeze it into a narrow column. */
+  .generator-output {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .generator-output code {
+    width: 100%;
+    word-break: break-all;
+    /* A reasonable minimum so very short passwords still look right */
+    min-height: 24px;
+  }
+  .generator-output > div {
+    /* The button row */
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .gen-card { margin: 16px; padding: 16px; }
+
+  /* Settings sections: stack buttons inside .health-section so the
+     export buttons (Decrypted/Encrypted) don't sit half-overlapped on a
+     line. The vk-app.js markup uses an inline `margin-left:8px` on the
+     second button — override it. Each button gets its own row, full
+     width minus the section padding, with a small gap. */
+  .health-section .btn + .btn {
+    margin-left: 0 !important;
+    margin-top: 8px;
+  }
+  .health-section .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Give the "Download encrypted archive" (btn-ghost) button visual
+     parity with "Download decrypted JSON" (btn-secondary) — both are
+     buttons doing similar things, and on mobile a bare text link looks
+     out of place next to a styled button. We use an outlined style so
+     it's clearly a button without competing for visual weight with the
+     primary. Scoped to .health-section so other btn-ghost (icon buttons
+     in toolbars etc.) keep their bare style. */
+  .health-section .btn-ghost {
+    border: 1px solid var(--divider);
+    background: transparent;
+    color: var(--text);
+  }
+  .health-section .btn-ghost:hover {
+    background: var(--surface-off);
+  }
+}
+.health-overview {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+  max-width: 800px;
+}
+
+.health-score-card {
+  display: flex; gap: 20px; align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  color: var(--text-m);
+  font-size: 13px;
+  box-shadow: var(--sh-sm);
+}
+@media (max-width: 767px) {
+  .health-score-card { padding: 16px; gap: 16px; }
+}
+.health-score-ring {
+  width: 84px; height: 84px;
+  border-radius: 50%;
+  background: conic-gradient(var(--primary) calc(var(--score) * 1%), var(--surface-off) 0);
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+  flex-shrink: 0;
+}
+.health-score-ring::after {
+  content: '';
+  position: absolute; inset: 7px;
+  background: var(--surface); border-radius: 50%;
+  z-index: 0;
+}
+.health-score-num {
+  position: relative;
+  z-index: 1;
+  font-size: 24px; font-weight: 700; color: var(--text);
+  letter-spacing: -0.02em;
+}
+.health-score-text {
+  position: relative;
+  z-index: 1;
+  font-size: 14px; color: var(--primary); margin-left: 1px; font-weight: 700;
+}
+.health-score-label {
+  font-size: 14px; font-weight: 600; color: var(--text);
+  margin-bottom: 4px;
+}
+.health-score-desc {
+  font-size: 12px; color: var(--text-m); line-height: 1.4;
+}
+
+/* Stat cards row */
+.health-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+@media (max-width: 600px) {
+  .health-stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+.health-stat-card {
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-md);
+  padding: 14px 14px 12px;
+  display: flex; flex-direction: column; gap: 4px;
+  position: relative;
+}
+.health-stat-icon {
+  color: var(--stat-color, var(--text-f));
+  margin-bottom: 4px;
+}
+.health-stat-num {
+  font-size: 24px; font-weight: 700; color: var(--text);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.health-stat-label {
+  font-size: 12px; color: var(--text-m);
+  font-weight: 500;
+}
+
+/* Section blocks */
+.health-section {
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-lg);
+  padding: 14px 18px;
+  margin-bottom: 12px;
+  max-width: 800px;
+  box-shadow: var(--sh-sm);
+}
+@media (max-width: 767px) {
+  .health-section { padding: 12px 14px; }
+}
+.health-section-title {
+  font-size: 13px; font-weight: 600;
+  color: var(--text);
+  padding-bottom: 10px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--divider);
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+}
+.health-section-title > span:first-child {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.health-rows { display: flex; flex-direction: column; }
+.health-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 0;
+  font-size: 13px; color: var(--text);
+  gap: 12px;
+}
+.health-row + .health-row { border-top: 1px solid var(--divider); }
+.health-row-info {
+  display: flex; align-items: center; gap: 10px;
+  flex: 1; min-width: 0;
+}
+.health-row-info > div:not(.health-row-icon) {
+  flex: 1; min-width: 0;
+}
+.health-row-icon {
+  width: 28px; height: 28px;
+  background: var(--surface-off);
+  color: var(--text-m);
+  border-radius: var(--r-sm);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.health-row-name {
+  font-size: 13px; font-weight: 500; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.health-row-sub {
+  font-size: 11px; color: var(--text-m);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  margin-top: 1px;
+}
+.health-fix-btn {
+  flex-shrink: 0;
+}
+
+.health-group-block {
+  background: var(--surface-off);
+  border-radius: var(--r-md);
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+.health-group-block:last-child { margin-bottom: 0; }
+.health-group-label {
+  font-size: 11px; font-weight: 600;
+  color: var(--text-f);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 0 8px;
+}
+.health-group-block .health-row { padding: 8px 0; }
+.health-group-block .health-row + .health-row { border-top-color: var(--surface-dyn); }
+
+/* Subtle favorite indicator on item cards */
+.item-fav-indicator {
+  color: var(--gold, #eab308);
+  fill: var(--gold, #eab308);
+  flex-shrink: 0;
+}
+.health-attribution {
+  font-size: 11px;
+  color: var(--text-f);
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--divider);
+  text-align: right;
+}
+.health-attribution a {
+  color: var(--text-m);
+  text-decoration: none;
+}
+.health-attribution a:hover { color: var(--primary); text-decoration: underline; }
+
+/* Color swatches (folder dialog) ───────────────────────────────── */
+.color-swatches { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.color-swatch {
+  width: 32px; height: 32px;
+  border-radius: var(--r-md);
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: all var(--tr);
+}
+.color-swatch:hover { transform: scale(1.08); }
+.color-swatch.active { border-color: var(--text); transform: scale(1.08); }
+
+/* Modal ─────────────────────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  padding: 16px;
+}
+.modal-backdrop.open { opacity: 1; }
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-xl);
+  max-width: 560px;
+  width: 100%;
+  max-height: 90vh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  transform: scale(0.96) translateY(8px);
+  transition: transform 0.22s cubic-bezier(.16, 1, .3, 1);
+  box-shadow: var(--sh-xl);
+}
+.modal-backdrop.open .modal-card { transform: scale(1) translateY(0); }
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--divider);
+  gap: 12px;
+}
+.modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+  letter-spacing: -0.01em;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.modal-header .modal-close {
+  flex-shrink: 0;
+}
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+.modal-footer {
+  padding: 14px 20px;
+  border-top: 1px solid var(--divider);
+  display: flex; gap: 8px; justify-content: flex-end;
+  flex-wrap: wrap;
+  align-items: center;
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+@media (max-width: 480px) {
+  .modal-card {
+    max-height: 95vh;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    align-self: flex-end;
+    margin: auto 0 0;
+  }
+  .modal-backdrop { padding: 0; align-items: flex-end; }
+}
+
+/* Empty state ────────────────────────────────────────────────────── */
+.empty-state {
+  padding: 64px 24px !important;
+  text-align: center;
+}
+.empty-state .empty-icon {
+  width: 72px; height: 72px;
+  border-radius: var(--r-lg);
+  background: var(--surface-off);
+  color: var(--text-f);
+  display: inline-flex; align-items: center; justify-content: center;
+  margin: 0 auto;
+}
+.empty-state h2,
+.empty-state p { color: var(--text-m); }
+
+/* Form inputs (refined) ─────────────────────────────────────────── */
+.form-group { margin-bottom: 16px; }
+.form-row { display: flex; gap: 12px; }
+.form-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-m);
+  margin-bottom: 6px;
+  letter-spacing: 0.005em;
+}
+.form-input, .form-select, .form-textarea {
+  width: 100%;
+  background: var(--surface-off);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text);
+  transition: all var(--tr);
+  outline: none;
+}
+/* Native <select> needs explicit height + reset to prevent text clipping
+   (browsers compute select height from font metrics + chrome, which often
+   crops with line-height < 1.4 or padding > 8px). Use appearance:none with
+   our own chevron, and ensure the option text has room. */
+.form-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  height: 40px;
+  padding: 0 36px 0 12px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px;
+  cursor: pointer;
+}
+.form-select::-ms-expand { display: none; }
+.form-select option {
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px;
+}
+.form-input:hover, .form-select:hover, .form-textarea:hover { border-color: var(--border); }
+.form-input:focus, .form-select:focus, .form-textarea:focus {
+  border-color: var(--primary);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px var(--primary-hl);
+}
+.form-input::placeholder, .form-textarea::placeholder { color: var(--text-f); }
+.form-textarea { resize: vertical; min-height: 72px; line-height: 1.5; }
+.form-input-wrapper { position: relative; display: flex; align-items: stretch; }
+.form-input-wrapper .form-input { padding-right: 80px; }
+.form-input-wrapper .input-action {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-f);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: var(--r-sm);
+  transition: color var(--tr);
+}
+.form-input-wrapper .input-action:hover { color: var(--text); }
+.form-input-wrapper .input-action[data-reveal-input], .form-input-wrapper .input-action:last-of-type { right: 6px; }
+.form-input-wrapper .input-action[data-gen-toggle], .form-input-wrapper .input-action:nth-last-of-type(2) { right: 38px; }
+.form-hint {
+  font-size: 12px;
+  color: var(--text-f);
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+.form-error {
+  background: var(--error-hl);
+  color: var(--error);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  font-size: 13px;
+  margin: 8px 0;
+  border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+}
+
+/* Buttons (refined) ─────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all var(--tr);
+  white-space: nowrap;
+  letter-spacing: -0.005em;
+}
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-sm { padding: 6px 10px; font-size: 12px; }
+.btn-lg { padding: 12px 18px; font-size: 14px; }
+.btn-block { width: 100%; }
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--primary-h);
+  border-color: var(--primary-h);
+  box-shadow: var(--sh-sm);
+}
+.btn-secondary {
+  background: var(--surface-off);
+  color: var(--text);
+  border-color: var(--divider);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--surface-dyn);
+  border-color: var(--border);
+}
+.btn-danger {
+  background: var(--error);
+  color: #fff;
+  border-color: var(--error);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--error-h);
+  border-color: var(--error-h);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text-m);
+  border-color: transparent;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--surface-off);
+  color: var(--text);
+}
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-md);
+  color: var(--text-m);
+  cursor: pointer;
+  transition: all var(--tr);
+}
+.btn-icon:hover {
+  background: var(--surface-off);
+  color: var(--text);
+}
+.btn-icon:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--primary), 0 0 0 4px var(--primary-hl);
+}
+.btn-spinner i { animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Tabs (auth screen) ───────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  background: var(--surface-off);
+  border-radius: var(--r-md);
+  padding: 4px;
+  margin-bottom: 20px;
+}
+.tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-m);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: all var(--tr);
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--sh-sm);
+}
+
+/* Auth screen ──────────────────────────────────────────────────── */
+/*
+ * The gradient is applied to <body> when the auth screen is showing
+ * (toggled via the .auth-active class on body) so it covers the entire
+ * viewport including any safe-area zones that are outside the auth
+ * container itself. #auth-screen is then just a flex-centering wrapper
+ * with safe-area-aware padding for the content.
+ */
+body.auth-active {
+  background:
+    radial-gradient(circle at 25% 20%, var(--primary-hl) 0%, transparent 45%),
+    radial-gradient(circle at 75% 75%, color-mix(in srgb, var(--primary) 12%, transparent) 0%, transparent 45%),
+    var(--surface);
+  background-attachment: fixed;
+}
+@media (max-width: 768px) {
+  /* Mobile: drop the gradient since the auth-card goes full-bleed anyway */
+  body.auth-active { background: var(--surface) !important; }
+}
+#auth-screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  padding-top: calc(24px + var(--safe-top));
+  padding-bottom: calc(24px + var(--safe-bottom));
+  padding-left: calc(24px + var(--safe-left));
+  padding-right: calc(24px + var(--safe-right));
+  background: transparent;
+}
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--surface);
+  border-radius: var(--r-xl);
+  padding: 32px;
+  box-shadow: var(--sh-lg);
+  animation: slideUp 0.3s ease;
+}
+.auth-logo {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 28px;
+}
+.auth-logo-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--r-md);
+  background: linear-gradient(135deg, var(--primary), var(--primary-h));
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--primary) 40%, transparent);
+}
+.auth-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.025em;
+  margin: 0;
+}
+.auth-sub {
+  font-size: 12px;
+  color: var(--text-m);
+  margin: 2px 0 0;
+}
+.auth-form { display: flex; flex-direction: column; gap: 4px; }
+.auth-form .form-group { margin-bottom: 14px; }
+.auth-form > .btn { margin-top: 4px; }
+.auth-footer {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--divider);
+  font-size: 12px;
+  color: var(--text-f);
+  text-align: center;
+  margin-bottom: 0;
+}
+
+/* Toast stack ──────────────────────────────────────────────────── */
+#toast-stack {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  display: flex; flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+@media (max-width: 767px) {
+  #toast-stack { bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+}
+.toast {
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-md);
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: var(--sh-md);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: all 0.2s ease;
+  pointer-events: auto;
+  max-width: 380px;
+}
+.toast.visible { opacity: 1; transform: translateY(0); }
+.toast-success { border-left: 3px solid var(--success); }
+.toast-error { border-left: 3px solid var(--error); color: var(--text); }
+.toast-info { border-left: 3px solid var(--primary); }
+
+/* Bottom nav (mobile) ──────────────────────────────────────────── */
+#bottom-nav {
+  display: none;
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 40;
+  background: var(--surface);
+  border-top: 1px solid var(--divider);
+  box-sizing: border-box;
+  height: calc(64px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  transition: transform 0.18s ease-out, opacity 0.18s ease-out;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+/* The bottom-nav stays visible at all times. Previously this had a rule
+   that hid it when the keyboard was up, but that caused too many false
+   positives during initial PWA layout where iOS reports innerHeight
+   != visualViewport.height transiently. iOS will overlay the keyboard
+   on top of the nav anyway, so there's no need to actively hide it. */
+
+/* Hard override: on mobile widths, the bottom-nav AND its children
+   MUST be visible. This is bulletproofed against any cascading rule
+   that might accidentally hide them. */
+@media (max-width: 767px) {
+  /* DEFENSE-IN-DEPTH: A fixed surface-colored "blanket" anchored to the
+     very bottom of the viewport, behind the nav and behind any other
+     content. If iOS for any reason fails to fill the home-indicator
+     safe-area zone with body bg, this blanket guarantees that area is
+     surface color (matching the nav) — so no black bar can ever show
+     through, regardless of how iOS computes the layout viewport, what
+     100dvh resolves to, or any other quirk.
+     ALSO: extends to cover the --vv-bottom-offset region (where layout
+     viewport extends past visual viewport) so even during the first
+     few ms before JS runs, no black gap is visible. */
+  body::before {
+    content: "";
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    /* Cover safe-area + viewport difference + a generous margin */
+    height: calc(env(safe-area-inset-bottom, 0px) + var(--vv-bottom-offset, 0px) + 80px);
+    background: var(--surface);
+    z-index: 0; /* below nav (z-index:40) but above content */
+    pointer-events: none;
+  }
+
+  #bottom-nav {
+    display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    transform: none !important;
+    pointer-events: auto !important;
+    /* Extend nav's surface bg INTO the home-indicator safe-area zone.
+       Without this, position:fixed bottom:0 anchors above the safe-area
+       zone (since iOS layout viewport excludes it), leaving a ~34px
+       black gap below the nav. With safe-area padding-bottom, the nav
+       element extends to the very bottom of the screen filled with
+       surface color. The visible buttons (.bottom-nav-inner) still fit
+       inside the top 64px; iOS draws the home indicator pill on top of
+       the padding zone, blending seamlessly with the nav. */
+    height: calc(64px + env(safe-area-inset-bottom, 0px)) !important;
+    padding: 0 !important;
+    padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+    /* CRITICAL: anchor to the visual viewport bottom, not layout viewport
+       bottom. JS sets --vv-bottom-offset to the difference between the
+       two, which is the source of the "nav too high on initial render"
+       bug on iOS PWA. With this, nav is in the correct place from first
+       paint, no scroll required. */
+    bottom: var(--vv-bottom-offset, 0px) !important;
+  }
+  #main-pane {
+    /* Match the nav's full height (visible 64px + safe-area padding) so
+       the bottom of scrolling content clears it */
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+  #bottom-nav .bottom-nav-inner {
+    display: flex !important;
+    visibility: visible !important;
+    /* Inner is exactly 64px so buttons sit in the visible portion above
+       the home indicator zone */
+    height: 64px !important;
+    align-items: stretch !important;
+    padding: 0 !important;
+  }
+  #bottom-nav .bottom-nav-btn {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    /* Symmetric padding now — content centered in 64px button */
+    padding-top: 8px !important;
+    padding-bottom: 8px !important;
+    height: auto !important;
+    align-self: stretch !important;
+  }
+  #bottom-nav .bnav-add-wrap {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    padding: 0 !important;
+    height: auto !important;
+    align-self: stretch !important;
+    align-items: center !important;
+  }
+  #bottom-nav .bnav-add-btn {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+  }
+  #bottom-nav .bottom-nav-btn span {
+    display: inline !important;
+    visibility: visible !important;
+    color: var(--text-m) !important;
+    font-size: 10px !important;
+    line-height: 1 !important;
+  }
+  #bottom-nav .bottom-nav-btn.active,
+  #bottom-nav .bottom-nav-btn.active span {
+    color: var(--primary) !important;
+  }
+}
+.bottom-nav-inner {
+  display: flex;
+  height: 64px;
+  align-items: stretch;
+  justify-content: space-around;
+}
+.bottom-nav-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 1;
+  padding: 6px 4px;
+  color: var(--text-f);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color var(--tr);
+}
+.bottom-nav-btn:active { color: var(--text); }
+.bottom-nav-btn.active { color: var(--primary); }
+.bnav-add-wrap { display: flex; align-items: center; justify-content: center; flex: 1; }
+.bnav-add-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--r-full);
+  background: linear-gradient(135deg, var(--primary), var(--primary-h));
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--primary) 35%, transparent), var(--sh-md);
+  transition: transform var(--tr);
+}
+.bnav-add-btn:active { transform: scale(.92); }
+
+#sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+/* Misc ─────────────────────────────────────────────────────────── */
+.muted { color: var(--text-m); }
+.hidden { display: none !important; }
+.spin-icon { animation: spin 0.8s linear infinite; vertical-align: -2px; }
+.danger-zone {
+  border-color: color-mix(in srgb, var(--error) 30%, var(--divider)) !important;
+  background: color-mix(in srgb, var(--error) 4%, var(--surface)) !important;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  font-weight: 500;
+}
+.badge-error { background: var(--error-hl); color: var(--error); }
+.badge-warning { background: var(--warning-hl); color: var(--warning); }
+</style>
+</head>
+<body class="auth-active">
+
+<!-- ═══════ AUTH SCREEN ═══════ -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <div class="auth-logo-icon"><i data-lucide="shield-check" width="28" height="28"></i></div>
+      <div>
+        <h1 class="auth-title">VaultKeeper</h1>
+        <p class="auth-sub">Zero-knowledge password manager</p>
+      </div>
+    </div>
+
+    <div class="tabs" id="auth-tabs">
+      <button class="tab-btn active" data-tab="login">Log in</button>
+      <button class="tab-btn" data-tab="signup">Sign up</button>
+    </div>
+
+    <form id="login-form" class="auth-form">
+      <div class="form-group">
+        <label class="form-label" for="login-username">Username</label>
+        <input class="form-input" id="login-username" type="text"
+               autocomplete="username webauthn" autocapitalize="none" spellcheck="false"
+               placeholder="your username" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="login-password">Master password</label>
+        <div class="form-input-wrapper">
+          <input class="form-input" id="login-password" type="password"
+                 autocomplete="current-password webauthn" placeholder="your master password" required />
+          <button type="button" class="btn-icon input-action" id="login-toggle-pw" aria-label="Show/hide password">
+            <i data-lucide="eye" width="16" height="16"></i>
+          </button>
+        </div>
+      </div>
+      <div id="login-error" class="form-error hidden"></div>
+      <button class="btn btn-primary btn-lg btn-block" id="login-submit" type="submit">
+        <span class="btn-label">Unlock vault</span>
+        <span class="btn-spinner hidden"><i data-lucide="loader-2" width="16" height="16"></i></span>
+      </button>
+    </form>
+
+    <form id="signup-form" class="auth-form hidden">
+      <div class="form-group">
+        <label class="form-label" for="signup-username">Username</label>
+        <input class="form-input" id="signup-username" type="text"
+               autocomplete="username" autocapitalize="none" spellcheck="false"
+               placeholder="2–50 chars, lowercase letters/numbers/._-" required />
+        <p class="form-hint">Case doesn't matter. Will be lowercased.</p>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="signup-password">Master password</label>
+        <div class="form-input-wrapper">
+          <input class="form-input" id="signup-password" type="password"
+                 autocomplete="new-password" placeholder="minimum 12 characters" required minlength="12" />
+          <button type="button" class="btn-icon input-action" id="signup-toggle-pw" aria-label="Show/hide password">
+            <i data-lucide="eye" width="16" height="16"></i>
+          </button>
+        </div>
+        <p class="form-hint"><strong style="color:var(--warning,#eab308)">Critical:</strong> If you forget this, your vault is permanently unrecoverable. There is no reset.</p>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="signup-confirm">Confirm master password</label>
+        <input class="form-input" id="signup-confirm" type="password"
+               autocomplete="new-password" placeholder="type it again" required />
+      </div>
+      <div id="signup-error" class="form-error hidden"></div>
+      <button class="btn btn-primary btn-lg btn-block" id="signup-submit" type="submit">
+        <span class="btn-label">Create vault</span>
+        <span class="btn-spinner hidden"><i data-lucide="loader-2" width="16" height="16"></i></span>
+      </button>
+    </form>
+
+    <p class="auth-footer">
+      End-to-end encrypted. The server never sees your data.
+    </p>
+  </div>
+</div>
+
+<!-- ═══════ APP SHELL ═══════ -->
+<div id="app-shell" class="hidden">
+  <header class="app-header">
+    <div class="app-header-left">
+      <button class="btn-icon btn-ghost mobile-only" id="btn-menu-mobile" title="Menu">
+        <i data-lucide="menu" width="18" height="18"></i>
+      </button>
+      <div class="auth-logo-icon" style="width:32px;height:32px">
+        <i data-lucide="shield-check" width="18" height="18"></i>
+      </div>
+      <div>
+        <div class="app-title">VaultKeeper</div>
+        <div class="app-sub" id="app-username">—</div>
+      </div>
+    </div>
+    <div class="app-header-right">
+      <button class="btn-icon btn-ghost" id="btn-lock" title="Lock vault">
+        <i data-lucide="lock" width="18" height="18"></i>
+      </button>
+      <button class="btn-icon btn-ghost" id="btn-logout" title="Sign out">
+        <i data-lucide="log-out" width="18" height="18"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Offline indicator. Hidden by default; shown by updateOfflineIndicator()
+       when state.offline is true. -->
+  <div id="offline-banner" class="hidden">
+    <div class="offline-banner-inner">
+      <span class="offline-banner-dot"></span>
+      <span class="offline-banner-text">Offline · changes will sync when you reconnect</span>
+      <button id="offline-banner-retry" class="offline-banner-btn" type="button">Retry</button>
+    </div>
+  </div>
+
+  <div class="app-body">
+    <aside id="sidebar"></aside>
+    <main id="main-pane"></main>
+  </div>
+
+  <nav id="bottom-nav" aria-label="Mobile navigation">
+    <div class="bottom-nav-inner">
+      <button class="bottom-nav-btn" data-bnav="all" aria-label="All items">
+        <i data-lucide="layout-grid" width="20" height="20"></i><span>Vault</span>
+      </button>
+      <button class="bottom-nav-btn" data-bnav="generator" aria-label="Generator">
+        <i data-lucide="shuffle" width="20" height="20"></i><span>Generate</span>
+      </button>
+      <div class="bnav-add-wrap">
+        <button class="bnav-add-btn" id="bnav-add" aria-label="Add item">
+          <i data-lucide="plus" width="22" height="22"></i>
+        </button>
+      </div>
+      <button class="bottom-nav-btn" data-bnav="health" aria-label="Health">
+        <i data-lucide="shield-check" width="20" height="20"></i><span>Health</span>
+      </button>
+      <button class="bottom-nav-btn" data-bnav="settings" aria-label="Settings">
+        <i data-lucide="settings" width="20" height="20"></i><span>Settings</span>
+      </button>
+    </div>
+  </nav>
+
+  <div id="sidebar-overlay" aria-hidden="true"></div>
+</div>
+
+<!-- ═══════ TOASTS ═══════ -->
+<div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
+<!-- ═══════ SCRIPTS ═══════ -->
+<script src="/vendor/hash-wasm.umd.min.js?v=3.4.5"></script>
+<script src="/vk-crypto.js?v=3.4.5"></script>
+<script src="/vk-import.js?v=3.4.5"></script>
+<script src="/vk-offline.js?v=3.4.5"></script>
+<script src="/vk-app.js?v=3.4.5"></script>
+<script src="/vk-offline-sync.js?v=3.4.5"></script>
+<script src="/vk-offline-conflicts.js?v=3.4.5"></script>
+<script src="/vk-webauthn-client.js?v=3.4.5"></script>
+<script src="/vk-webauthn-integration.js?v=3.4.5"></script>
+
+</body>
+</html>
