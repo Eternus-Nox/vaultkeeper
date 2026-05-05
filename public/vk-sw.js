@@ -15,7 +15,7 @@
 
 // Bump this on every release to invalidate old shells.
 // Keep in sync with the version we set on .js?v= query params in index.html.
-const SHELL_VERSION = 'v3.4.5';
+const SHELL_VERSION = 'v3.4.6';
 const SHELL_CACHE = 'vk-shell-' + SHELL_VERSION;
 
 // Files that make up the offline-capable app shell. We pre-cache these
@@ -24,16 +24,16 @@ const SHELL_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/vk-app.js?v=3.4.5',
-  '/vk-crypto.js?v=3.4.5',
-  '/vk-crypto-worker.js?v=3.4.5',
-  '/vk-import.js?v=3.4.5',
-  '/vk-webauthn-client.js?v=3.4.5',
-  '/vk-webauthn-integration.js?v=3.4.5',
-  '/vk-offline.js?v=3.4.5',
-  '/vk-offline-sync.js?v=3.4.5',
-  '/vk-offline-conflicts.js?v=3.4.5',
-  '/vendor/hash-wasm.umd.min.js?v=3.4.5',
+  '/vk-app.js?v=3.4.6',
+  '/vk-crypto.js?v=3.4.6',
+  '/vk-crypto-worker.js?v=3.4.6',
+  '/vk-import.js?v=3.4.6',
+  '/vk-webauthn-client.js?v=3.4.6',
+  '/vk-webauthn-integration.js?v=3.4.6',
+  '/vk-offline.js?v=3.4.6',
+  '/vk-offline-sync.js?v=3.4.6',
+  '/vk-offline-conflicts.js?v=3.4.6',
+  '/vendor/hash-wasm.umd.min.js?v=3.4.6',
   '/vendor/lucide.js',
   '/icon-192.png',
   '/icon-512.png',
@@ -199,7 +199,7 @@ async function handleAsset(req) {
     return cached;
   }
 
-  // Loose match — handles ?v=3.2.0 → ?v=3.4.5 cache-buster mismatches
+  // Loose match — handles ?v=3.2.0 → ?v=3.4.6 cache-buster mismatches
   // when a SW update has bumped the version but the user's still loading
   // an older URL (or vice versa). Critical for offline reload of the
   // shell across deploys.
